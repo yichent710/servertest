@@ -1,0 +1,14 @@
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /build
+COPY --from=sunnyisland go.mod go.sum ./
+COPY --from=sunnyisland vendor ./vendor
+COPY --from=sunnyisland . ./
+COPY go-client/main.go ./cmd/severtest/main.go
+RUN cd cmd/severtest && go build -o /out/severtest-client .
+
+FROM alpine:latest
+RUN adduser -D -u 1000 appuser
+USER appuser
+COPY --from=builder /out/severtest-client /usr/local/bin/severtest-client
+ENTRYPOINT ["/usr/local/bin/severtest-client"]

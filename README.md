@@ -1,6 +1,6 @@
 # severtest
 
-SunnyIsland服务器先行测试工具。第一阶段用于生成“活动里程碑2.0”测试前置条件计划，后续通过Adapter接入现有Garden测试客户端协议。
+SunnyIsland服务器先行测试工具。当前最小闭环直接复用SunnyIsland的Protobuf、消息绑定和Actor Diff，实现里程碑2.0的真实本地请求测试。
 
 ## 当前能力
 
@@ -11,10 +11,15 @@ SunnyIsland服务器先行测试工具。第一阶段用于生成“活动里程
 - 在输出中记录配置SHA-256，避免使用错误版本的配置；
 - 提供结构化JSON日志；
 - 通过`ServerAdapter`隔离业务规划和SunnyIsland私有协议。
+- 通过本地Gate向Garden发送真实协议请求；
+- 使用`DebugGiveHarvestReq`生成果实并从Actor Diff发现背包ID；
+- 使用`SubmitMilestoneV2FruitsReq`提交果实；
+- 校验提交积分、溢出积分、抽奖次数、背包扣除和奖励；
+- 输出包含每一步输入与断言的JSON报告。
 
 当前示例配置只用于验证工具流程，不代表线上数值。接入测试服前必须替换为对应环境的真实活动、果实和变异配置。
 
-## 运行
+## 运行规划器
 
 无需第三方运行依赖，要求Python 3.11或更高版本：
 
@@ -31,6 +36,46 @@ PYTHONPATH=src python3 -m severtest.cli plan \
 
 也可以使用`--target-score`直接指定目标积分，使用`--output reports/plan.json`保存计划。
 
+## 运行本地端到端冒烟
+
+前提：SunnyIsland位于相邻目录`../sunnyisland`，Docker网络`master_garden_network`、Gate和0.11.5特性Garden已启动。测试链路必须只保留一个Garden节点，避免Gate将请求路由到旧版本Garden。
+
+测试账号和活动：
+
+- UID：`10000912`
+- 活动ID：`90001`
+- 果实：`3010001`，变异ID：`28`
+- 预期：两枚果实各5分，提交后总进度10，触发第一个抽奖节点
+
+构建客户端：
+
+```bash
+docker build \
+  --build-context sunnyisland=../sunnyisland \
+  -f Dockerfile.client \
+  -t severtest/client:local .
+```
+
+执行闭环：
+
+```bash
+mkdir -p reports
+docker run --rm \
+  --network master_garden_network \
+  -v "$PWD/reports:/reports" \
+  severtest/client:local \
+  -uid 10000912 \
+  -host master_garden_gate \
+  -port 26002 \
+  -output /reports/milestone-v2-smoke.json
+```
+
+成功时终端输出`PASSED`，详细结果位于`reports/milestone-v2-smoke.json`。
+
+## 当前已发现问题
+
+里程碑2.0首次初始化并提交可完整通过；但Actor释放后再次加载时，Garden日志出现`活动数据恢复异常 活动 Id 90001`，随后提交返回`操作失败`。这说明里程碑2.0的持久化/恢复链路存在缺陷，不能通过测试工具绕过，应该作为服务器问题修复并增加“提交后重启Actor再继续提交”的回归用例。
+
 ## 维护边界
 
 - 工具不直接修改MongoDB或Redis；所有造数操作必须通过玩家Actor的请求执行。
@@ -38,10 +83,10 @@ PYTHONPATH=src python3 -m severtest.cli plan \
 - Adapter发现服务器积分与预测不一致时必须停止，不能继续推进玩家状态。
 - 测试环境配置与协议版本必须记录在执行报告中。
 
-## 下一步
+## 后续测试场景
 
-1. 从SunnyIsland的`cmd/garden-client/internal/clientx`提取独立协议Adapter；
-2. 接入`DebugGiveHarvestReq`和`SubmitMilestoneV2FruitsReq`；
-3. 使用测试服真实配置替换示例目录；
-4. 实现“节点前N分”和“溢出11分”两个首批条件模板；
-5. 保存服务器响应、背包ID和最终人工测试指引。
+1. Actor释放并重载后继续提交，覆盖持久化恢复；
+2. 节点前N分和跨节点提交；
+3. 溢出10分允许、溢出11分拒绝和二次确认；
+4. 每日重置、轮次切换和最终奖励；
+5. 重复果实ID、非法果实和并发提交。
