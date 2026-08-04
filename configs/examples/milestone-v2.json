@@ -1,0 +1,23 @@
+{
+  "activity_id": 93001,
+  "activity_vary_ids": [28],
+  "quality_scores": {
+    "1": 5,
+    "2": 10,
+    "3": 15,
+    "4": 20,
+    "5": 25,
+    "6": 30
+  },
+  "innate_vary_scores": {
+    "1": 5,
+    "16": 10,
+    "13": 15
+  },
+  "season_tag": 3,
+  "season_score": 5,
+  "rounds": [
+    {"round": 1, "vitality_cost": 0, "draw_scores": [10, 20, 30]},
+    {"round": 2, "vitality_cost": 20, "draw_scores": [15, 30, 45]}
+  ]
+}

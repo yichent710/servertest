@@ -1,0 +1,27 @@
+{
+  "fruits": [
+    {
+      "name": "普通活动果实",
+      "harvest_type_id": 7101,
+      "quality": 1,
+      "activity_vary_id": 28,
+      "weight": 3.0
+    },
+    {
+      "name": "普通季节活动果实",
+      "harvest_type_id": 7201,
+      "quality": 1,
+      "activity_vary_id": 28,
+      "season_tags": [3],
+      "weight": 3.0
+    },
+    {
+      "name": "优良黄金活动果实",
+      "harvest_type_id": 7102,
+      "quality": 2,
+      "activity_vary_id": 28,
+      "innate_vary_ids": [1],
+      "weight": 3.0
+    }
+  ]
+}
