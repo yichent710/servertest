@@ -72,6 +72,35 @@ docker run --rm \
 
 成功时终端输出`PASSED`，详细结果位于`reports/milestone-v2-smoke.json`。
 
+也可以使用自动化运行器，一次性完成构建、执行、报告归档和Garden日志采集：
+
+```bash
+chmod +x scripts/run_local_smoke.sh
+scripts/run_local_smoke.sh
+```
+
+每次运行会生成独立目录：
+
+```text
+reports/<run-id>/
+├── client.log
+├── garden.log
+├── metadata.json
+└── milestone-v2-smoke.json
+```
+
+不同分支的Docker Compose名称可以通过环境变量覆盖：
+
+```bash
+BUILD=0 \
+NETWORK=feat-wx-0120_garden_network \
+GATE_HOST=feat-wx-0.12.0_garden_gate \
+GARDEN_CONTAINER=feat-wx-0.12.0_garden_garden \
+scripts/run_local_smoke.sh
+```
+
+运行器不会自动删除Redis或Mongo数据；账号重置必须单独执行并明确确认环境。
+
 ## 当前已发现问题
 
 里程碑2.0首次初始化并提交可完整通过；但Actor释放后再次加载时，Garden日志出现`活动数据恢复异常 活动 Id 90001`，随后提交返回`操作失败`。这说明里程碑2.0的持久化/恢复链路存在缺陷，不能通过测试工具绕过，应该作为服务器问题修复并增加“提交后重启Actor再继续提交”的回归用例。
