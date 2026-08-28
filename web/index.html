@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SeverTest 控制台</title>
+<style>body{font:14px system-ui;margin:0;background:#f4f6f8;color:#20252b}main{max-width:1100px;margin:32px auto;padding:0 20px}section{background:#fff;border:1px solid #dfe3e8;border-radius:6px;padding:18px;margin:14px 0}h1{margin:0 0 20px}label{display:block;margin:8px 0 4px}input{padding:8px;border:1px solid #c8ced6;border-radius:4px;width:240px}button{padding:9px 14px;border:0;border-radius:4px;background:#1769e0;color:white;cursor:pointer;margin:8px 6px 0 0}button.secondary{background:#697586}.case{display:inline-block;margin:6px 16px 6px 0}.status{font-weight:600}.pass{color:#16803c}.fail{color:#c62828}pre{background:#111820;color:#d8e1ea;padding:12px;overflow:auto;max-height:260px}</style></head>
+<body><main><h1>SeverTest 测试控制台</h1>
+<section><h2>测试用例</h2><div id="cases">加载中...</div></section>
+<section><h2>运行参数</h2><label>UID</label><input id="uid" value="10000000"><label>Gate 地址</label><input id="host" value="192.168.1.84"><label>Gate 端口</label><input id="port" value="27101"><br><button onclick="runSelected()">执行选中用例</button><button class="secondary" onclick="loadRuns()">刷新任务</button></section>
+<section><h2>任务</h2><div id="runs">暂无任务</div></section><section><h2>详情</h2><pre id="detail">选择任务查看详情</pre></section></main>
+<script>
+const api='http://127.0.0.1:8088'; let runs={};
+async function loadCases(){const d=await fetch(api+'/cases').then(r=>r.json());document.querySelector('#cases').innerHTML=d.cases.map(c=>`<label class="case"><input type="checkbox" value="${c.file}"> ${c.name}</label>`).join('')||'没有用例';}
+async function runSelected(){const cases=[...document.querySelectorAll('#cases input:checked')].map(x=>x.value);if(!cases.length)return alert('请选择用例');const p={cases,UID_VALUE:uid.value,GATE_HOST:host.value,GATE_PORT:port.value};const d=await fetch(api+'/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).then(r=>r.json());d.run_ids.forEach(id=>runs[id]=true);loadRuns();}
+async function loadRuns(){const d=await fetch(api+'/runs').then(r=>r.json());document.querySelector('#runs').innerHTML=d.runs.reverse().map(x=>`<div><button class="secondary" onclick="detail('${x.id}')">${x.id.slice(0,8)}</button> <span class="status ${x.status}">${x.status}</span> ${x.case}</div>`).join('')||'暂无任务';}
+async function detail(id){const d=await fetch(api+'/runs/'+id).then(r=>r.json());detailEl.textContent=d.status+'\\n'+(d.stderr||d.stdout||'');if(d.status==='queued'||d.status==='running')setTimeout(()=>detail(id),1500)}
+const detailEl=document.querySelector('#detail');loadCases();loadRuns();
+</script></body></html>

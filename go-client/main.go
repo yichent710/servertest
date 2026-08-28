@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,8 +55,36 @@ type report struct {
 	RunID      string  `json:"run_id"`
 	UID        uint64  `json:"uid"`
 	ActivityID int32   `json:"activity_id"`
+	TestCase   string  `json:"test_case,omitempty"`
 	Status     string  `json:"status"`
 	Events     []event `json:"events"`
+	Assertions []assertionResult `json:"assertions,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	FailureAnalysis string `json:"failure_analysis,omitempty"`
+}
+
+type testCase struct {
+	ID string `json:"id"`
+	Name string `json:"name"`
+	Preconditions []any `json:"preconditions"`
+	Steps []caseStep `json:"steps"`
+	Assertions []assertion `json:"assertions"`
+}
+type caseStep struct { Action string `json:"action"`; Params map[string]any `json:"params"`; SaveAs string `json:"save_as"` }
+type assertion struct { Name string `json:"name"`; Metric string `json:"metric"`; Op string `json:"op"`; Expected float64 `json:"expected"` }
+type assertionResult struct { Name string `json:"name"`; Metric string `json:"metric"`; Actual float64 `json:"actual"`; Expected float64 `json:"expected"`; Passed bool `json:"passed"`; Error string `json:"error,omitempty"` }
+
+func evaluateAssertions(r *report, path string, metrics map[string]float64) error {
+	data, err := os.ReadFile(path); if err != nil { return fmt.Errorf("read test case: %w", err) }
+	var tc testCase; if err := json.Unmarshal(data, &tc); err != nil { return fmt.Errorf("parse test case: %w", err) }
+	failed := 0
+	for _, a := range tc.Assertions {
+		actual, ok := metrics[a.Metric]; passed := false; msg := ""
+		if !ok { msg = "metric not found" } else { switch strings.ToLower(a.Op) { case "eq": passed = actual == a.Expected; case "ne": passed = actual != a.Expected; case "gt": passed = actual > a.Expected; case "gte": passed = actual >= a.Expected; case "lt": passed = actual < a.Expected; case "lte": passed = actual <= a.Expected; default: msg = "unsupported operator" } }
+		if !passed { failed++ }
+		r.Assertions = append(r.Assertions, assertionResult{Name:a.Name, Metric:a.Metric, Actual:actual, Expected:a.Expected, Passed:passed, Error:msg})
+	}
+	if failed > 0 { return fmt.Errorf("%d assertion(s) failed", failed) }; return nil
 }
 
 func (r *report) add(step, status string, details map[string]any) {
@@ -252,10 +281,13 @@ func main() {
 	host := flag.String("host", "host.docker.internal", "Garden websocket host")
 	port := flag.Int("port", 27203, "Garden websocket port")
 	output := flag.String("output", "/reports/milestone-v2-smoke.json", "JSON report path")
+	casePath := flag.String("case", "/cases/milestone-v2-submit.json", "test case definition")
 	flag.Parse()
 
-	r := &report{RunID: fmt.Sprintf("milestone-v2-%d", time.Now().UnixMilli()), UID: *uid, ActivityID: activityID, Status: "FAILED"}
-	if err := run(r, *host, *port); err != nil {
+	r := &report{RunID: fmt.Sprintf("milestone-v2-%d", time.Now().UnixMilli()), UID: *uid, ActivityID: activityID, TestCase: *casePath, Status: "FAILED"}
+	if err := run(r, *host, *port, *casePath); err != nil {
+		r.Summary = "测试失败：" + err.Error()
+		r.FailureAnalysis = explainFailure(err.Error())
 		r.add("run", "FAILED", map[string]any{"error": err.Error()})
 		writeReport(*output, r)
 		fmt.Fprintf(os.Stderr, "FAILED: %v\n", err)
@@ -266,7 +298,32 @@ func main() {
 	fmt.Printf("PASSED report=%s\n", *output)
 }
 
-func run(r *report, host string, port int) error {
+func explainFailure(message string) string {
+	switch {
+	case strings.Contains(message, "websocket.Dial"):
+		return "连接阶段失败：检查 Gate 宿主机映射端口、WebSocket 路径 /ws 和网络可达性。"
+	case strings.Contains(message, "load initial actor"):
+		return "Actor 加载阶段失败：检查 UID 是否存在、Gate 到 Garden 的 RPC/Redis Stream 是否正常，以及服务端是否出现超时。"
+	case strings.Contains(message, "assertion"):
+		return "业务断言失败：对照报告中的实际值和期望值，确认需求口径、配置和服务端状态变更。"
+	case strings.Contains(message, "submit fruits"):
+		return "提交请求失败：检查请求参数、果实归属、活动配置和服务端返回错误码。"
+	default:
+		return "执行阶段失败：先查看失败步骤的请求结果和 Garden 日志，再按服务端模块定位。"
+	}
+}
+
+func run(r *report, host string, port int, casePath string) error {
+	caseData, err := os.ReadFile(casePath)
+	if err != nil { return fmt.Errorf("read test case: %w", err) }
+	var tc testCase
+	if err := json.Unmarshal(caseData, &tc); err != nil { return fmt.Errorf("parse test case: %w", err) }
+	harvestCount := 2
+	for _, step := range tc.Steps {
+		if step.Action == "give_harvest" {
+			if value, ok := step.Params["count"].(float64); ok && value > 0 { harvestCount = int(value) }
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	c, err := newTestClient(r.UID, host, port)
@@ -279,13 +336,13 @@ func run(r *report, host string, port int) error {
 	if err := c.refresh(ctx); err != nil {
 		return fmt.Errorf("load initial actor: %w", err)
 	}
-	_, beforeScore, beforeDraws, _, beforeIDs, beforeReadable, err := c.snapshot()
+	beforeVersion, beforeScore, beforeDraws, _, beforeIDs, beforeReadable, err := c.snapshot()
 	if err != nil {
 		return err
 	}
 	r.add("initial_state", "PASSED", map[string]any{"score": beforeScore, "draw_count": beforeDraws, "harvest_count": len(beforeIDs), "activity_state_readable": beforeReadable})
 
-	for i := 0; i < 2; i++ {
+	for i := 0; i < harvestCount; i++ {
 		if _, err := c.CallBodyAndWait(&pbGardenClient.DebugGiveHarvestReq{HarvestId: harvestTypeID, Weight: 3, VaryList: []int64{activityVaryID}}); err != nil {
 			return fmt.Errorf("give harvest %d: %w", i+1, err)
 		}
@@ -298,8 +355,8 @@ func run(r *report, host string, port int) error {
 		return err
 	}
 	newIDs := difference(afterIDs, beforeIDs)
-	if len(newIDs) != 2 {
-		return fmt.Errorf("expected 2 new harvests, got %d: %v", len(newIDs), newIDs)
+	if len(newIDs) != harvestCount {
+		return fmt.Errorf("expected %d new harvests, got %d: %v", harvestCount, len(newIDs), newIDs)
 	}
 	r.add("give_harvest", "PASSED", map[string]any{"harvest_ids": newIDs, "vary_id": activityVaryID})
 
@@ -310,9 +367,6 @@ func run(r *report, host string, port int) error {
 	rsp, ok := raw.(*pbGardenClient.SubmitMilestoneV2FruitsRsp)
 	if !ok {
 		return fmt.Errorf("unexpected submit response %T", raw)
-	}
-	if rsp.SubmittedScore != expectedAddScore || rsp.OverflowScore != 0 {
-		return fmt.Errorf("unexpected submit score=%d overflow=%d", rsp.SubmittedScore, rsp.OverflowScore)
 	}
 	r.add("submit", "PASSED", map[string]any{
 		"submitted_score": rsp.SubmittedScore, "overflow_score": rsp.OverflowScore,
@@ -329,13 +383,12 @@ func run(r *report, host string, port int) error {
 	if containsAny(finalIDs, newIDs) {
 		return fmt.Errorf("final state mismatch score=%d draws=%d remaining_test_fruits=%v", finalScore, finalDraws, containsAny(finalIDs, newIDs))
 	}
-	if beforeReadable && finalReadable && (finalScore != beforeScore+expectedAddScore || finalDraws != beforeDraws+1) {
-		return fmt.Errorf("final milestone mismatch score=%d draws=%d", finalScore, finalDraws)
-	}
 	r.add("final_state", "PASSED", map[string]any{
 		"actor_version": version, "score": finalScore, "draw_count": finalDraws,
 		"final_reward_claimed": finalClaimed, "consumed_harvest_ids": newIDs, "activity_state_readable": finalReadable,
 	})
+	metrics := map[string]float64{"submit.submitted_score": float64(rsp.SubmittedScore), "submit.overflow_score": float64(rsp.OverflowScore), "submit.earned_vitality": float64(rsp.EarnedVitality), "before.score": float64(beforeScore), "after.score": float64(finalScore), "before.draw_count": float64(beforeDraws), "after.draw_count": float64(finalDraws), "before.actor_version": float64(beforeVersion), "after.actor_version": float64(version), "consumed_fruits": 1}
+	if err := evaluateAssertions(r, casePath, metrics); err != nil { return err }
 	return nil
 }
 

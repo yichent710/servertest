@@ -12,6 +12,9 @@ GATE_HOST="${GATE_HOST:-master_garden_gate}"
 GATE_PORT="${GATE_PORT:-26002}"
 UID_VALUE="${UID_VALUE:-10000912}"
 ACTIVITY_ID="${ACTIVITY_ID:-90001}"
+CASE_FILE="${CASE_FILE:-/cases/milestone-v2-submit.json}"
+TEST_SID="${TEST_SID:-severtest-local}"
+REDIS_CONTAINER="${REDIS_CONTAINER:-${GATE_HOST%_gate}_redis}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/reports}"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$OUTPUT_DIR/$RUN_ID"
@@ -33,6 +36,17 @@ if ! "$DOCKER_BIN" network inspect "$NETWORK" >/dev/null 2>&1; then
   exit 2
 fi
 
+if [[ "${PREPARE_SID:-1}" == "1" ]]; then
+  if ! "$DOCKER_BIN" inspect "$REDIS_CONTAINER" >/dev/null 2>&1; then
+    echo "[severtest] Redis container not found: $REDIS_CONTAINER" >&2
+    echo "[severtest] set REDIS_CONTAINER explicitly, or use PREPARE_SID=0" >&2
+    exit 2
+  fi
+  echo "[severtest] preparing local SID in $REDIS_CONTAINER"
+  "$DOCKER_BIN" exec "$REDIS_CONTAINER" redis-cli \
+    SET "user:login:sid:$UID_VALUE" "$TEST_SID" EX 86400 >/dev/null
+fi
+
 # The client exits non-zero on assertion failure. Preserve its report and logs
 # before returning the same status to CI or a developer shell.
 set +e
@@ -44,6 +58,7 @@ set +e
   -host "$GATE_HOST" \
   -port "$GATE_PORT" \
   -output /reports/milestone-v2-smoke.json \
+  -case "$CASE_FILE" \
   >"$RUN_DIR/client.log" 2>&1
 CLIENT_STATUS=$?
 set -e
@@ -67,6 +82,8 @@ cat >"$RUN_DIR/metadata.json" <<EOF
   "network": "$NETWORK",
   "gate_host": "$GATE_HOST",
   "gate_port": $GATE_PORT,
+  "redis_container": "$REDIS_CONTAINER",
+  "sid_prepared": ${PREPARE_SID:-1},
   "client_exit_code": $CLIENT_STATUS,
   "report": "$REPORT"
 }

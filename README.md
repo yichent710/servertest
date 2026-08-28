@@ -96,10 +96,12 @@ BUILD=0 \
 NETWORK=feat-wx-0120_garden_network \
 GATE_HOST=feat-wx-0.12.0_garden_gate \
 GARDEN_CONTAINER=feat-wx-0.12.0_garden_garden \
-scripts/run_local_smoke.sh
+bash scripts/run_local_smoke.sh
 ```
 
-运行器不会自动删除Redis或Mongo数据；账号重置必须单独执行并明确确认环境。
+运行器会在同一套本地Compose Redis中为测试UID写入有效期24小时的`severtest-local`登录SID，确保Gate绑定成功。可通过`PREPARE_SID=0`关闭，或用`REDIS_CONTAINER`显式指定本地Redis容器。
+
+运行器不会删除Redis或Mongo中的Actor数据；账号重置必须单独执行并明确确认环境。
 
 ## 当前已发现问题
 
@@ -119,3 +121,21 @@ scripts/run_local_smoke.sh
 3. 溢出10分允许、溢出11分拒绝和二次确认；
 4. 每日重置、轮次切换和最终奖励；
 5. 重复果实ID、非法果实和并发提交。
+# Backend API
+
+启动本地测试任务服务：
+
+```bash
+PYTHONPATH=src python3 -m severtest.server
+```
+
+接口：
+
+```bash
+curl http://127.0.0.1:8088/health
+curl http://127.0.0.1:8088/cases
+curl -X POST http://127.0.0.1:8088/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"case":"milestone-v2-submit.json","UID_VALUE":"10000000","GATE_HOST":"192.168.1.84","GATE_PORT":"27101"}'
+curl http://127.0.0.1:8088/runs/<run_id>
+```

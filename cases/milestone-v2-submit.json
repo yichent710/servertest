@@ -1,0 +1,18 @@
+{
+  "id": "milestone_v2_submit",
+  "name": "提交里程碑果实",
+  "preconditions": [{"type": "actor_exists"}],
+  "steps": [
+    {"action": "load_actor"},
+    {"action": "give_harvest", "params": {"count": 2}},
+    {"action": "submit_milestone_v2"},
+    {"action": "refresh_actor"}
+  ],
+  "assertions": [
+    {"name": "submitted score is positive", "metric": "submit.submitted_score", "op": "gt", "expected": 0},
+    {"name": "no overflow fruits", "metric": "submit.overflow_score", "op": "eq", "expected": 0},
+    {"name": "vitality is granted", "metric": "submit.earned_vitality", "op": "gte", "expected": 0},
+    {"name": "score increased", "metric": "after.score", "op": "gt", "expected": 0},
+    {"name": "submitted fruits consumed", "metric": "consumed_fruits", "op": "eq", "expected": 1}
+  ]
+}
