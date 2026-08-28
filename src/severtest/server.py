@@ -91,7 +91,8 @@ class Handler(BaseHTTPRequestHandler):
             for path in sorted(CASES.glob("*.json")):
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
-                    cases.append({"id": data.get("id", path.stem), "name": data.get("name", path.stem), "file": path.name})
+                    review = data.get("review", {})
+                    cases.append({"id": data.get("id", path.stem), "name": data.get("name", path.stem), "file": path.name, "review_status": review.get("status", "draft"), "review_iteration": review.get("iteration", 0)})
                 except (OSError, ValueError):
                     continue
             return self.send_json(200, {"cases": cases})
@@ -118,6 +119,9 @@ class Handler(BaseHTTPRequestHandler):
                 case = str(item)
                 if not (CASES / case).is_file() or Path(case).name != case:
                     raise ValueError(f"unknown case: {case}")
+                case_data = json.loads((CASES / case).read_text(encoding="utf-8"))
+                if case_data.get("review", {}).get("status", "draft") != "approved":
+                    raise ValueError(f"case is not approved: {case}")
                 run_ids.append(start_run(case, env))
             return self.send_json(202, {"run_ids": run_ids})
         except (KeyError, ValueError, json.JSONDecodeError) as exc:

@@ -1,6 +1,13 @@
 {
   "id": "milestone_v2_submit",
   "name": "提交里程碑果实",
+  "review": {
+    "status": "approved",
+    "reviewer": "qa-team",
+    "reviewed_at": "2026-08-28",
+    "comments": [],
+    "iteration": 1
+  },
   "preconditions": [{"type": "actor_exists"}],
   "steps": [
     {"action": "load_actor"},
