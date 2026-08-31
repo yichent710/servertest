@@ -61,6 +61,7 @@ type report struct {
 	Assertions []assertionResult `json:"assertions,omitempty"`
 	Summary string `json:"summary,omitempty"`
 	FailureAnalysis string `json:"failure_analysis,omitempty"`
+	PlannedSteps []string `json:"planned_steps,omitempty"`
 }
 
 type testCase struct {
@@ -328,6 +329,7 @@ func run(r *report, host string, port int, casePath string) error {
 	if err := json.Unmarshal(caseData, &tc); err != nil { return fmt.Errorf("parse test case: %w", err) }
 	if err := validateCaseSteps(tc); err != nil { return err }
 	if err := validateExecutionOrder(tc); err != nil { return err }
+	for _, step := range tc.Steps { r.PlannedSteps = append(r.PlannedSteps, step.Action) }
 	harvestCount := 2
 	for _, step := range tc.Steps {
 		if step.Action == "give_harvest" {
@@ -342,16 +344,19 @@ func run(r *report, host string, port int, casePath string) error {
 	}
 	defer c.Stop()
 	r.add("connect", "PASSED", map[string]any{"host": host, "port": port})
+	r.add("load_actor", "RUNNING", map[string]any{"source": "case step"})
 
 	if err := c.refresh(ctx); err != nil {
 		return fmt.Errorf("load initial actor: %w", err)
 	}
+	r.add("load_actor", "PASSED", nil)
 	beforeVersion, beforeScore, beforeDraws, _, beforeIDs, beforeReadable, err := c.snapshot()
 	if err != nil {
 		return err
 	}
 	r.add("initial_state", "PASSED", map[string]any{"score": beforeScore, "draw_count": beforeDraws, "harvest_count": len(beforeIDs), "activity_state_readable": beforeReadable})
 
+	r.add("give_harvest", "RUNNING", map[string]any{"count": harvestCount})
 	for i := 0; i < harvestCount; i++ {
 		if _, err := c.CallBodyAndWait(&pbGardenClient.DebugGiveHarvestReq{HarvestId: harvestTypeID, Weight: 3, VaryList: []int64{activityVaryID}}); err != nil {
 			return fmt.Errorf("give harvest %d: %w", i+1, err)
@@ -369,6 +374,7 @@ func run(r *report, host string, port int, casePath string) error {
 		return fmt.Errorf("expected %d new harvests, got %d: %v", harvestCount, len(newIDs), newIDs)
 	}
 	r.add("give_harvest", "PASSED", map[string]any{"harvest_ids": newIDs, "vary_id": activityVaryID})
+	r.add("submit_milestone_v2", "RUNNING", nil)
 
 	raw, err := c.CallBodyAndWait(&pbGardenClient.SubmitMilestoneV2FruitsReq{ActivityId: activityID, HarvestIds: newIDs})
 	if err != nil {
@@ -382,6 +388,8 @@ func run(r *report, host string, port int, casePath string) error {
 		"submitted_score": rsp.SubmittedScore, "overflow_score": rsp.OverflowScore,
 		"earned_vitality": rsp.EarnedVitality, "draw_rewards": rsp.DrawRewards, "final_rewards": rsp.FinalRewards,
 	})
+	r.add("submit_milestone_v2", "PASSED", nil)
+	r.add("refresh_actor", "RUNNING", nil)
 
 	if err := c.refresh(ctx); err != nil {
 		return fmt.Errorf("refresh final actor: %w", err)
@@ -397,6 +405,7 @@ func run(r *report, host string, port int, casePath string) error {
 		"actor_version": version, "score": finalScore, "draw_count": finalDraws,
 		"final_reward_claimed": finalClaimed, "consumed_harvest_ids": newIDs, "activity_state_readable": finalReadable,
 	})
+	r.add("refresh_actor", "PASSED", nil)
 	metrics := map[string]float64{"submit.submitted_score": float64(rsp.SubmittedScore), "submit.overflow_score": float64(rsp.OverflowScore), "submit.earned_vitality": float64(rsp.EarnedVitality), "before.score": float64(beforeScore), "after.score": float64(finalScore), "before.draw_count": float64(beforeDraws), "after.draw_count": float64(finalDraws), "before.actor_version": float64(beforeVersion), "after.actor_version": float64(version), "consumed_fruits": 1}
 	if err := evaluateAssertions(r, casePath, metrics); err != nil { return err }
 	return nil
