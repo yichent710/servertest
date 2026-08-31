@@ -71,12 +71,14 @@ type testCase struct {
 	Assertions []assertion `json:"assertions"`
 }
 type caseStep struct { Action string `json:"action"`; Params map[string]any `json:"params"`; SaveAs string `json:"save_as"` }
+var supportedActions = map[string]string{"load_actor":"加载 Actor", "give_harvest":"生成果实", "submit_milestone_v2":"提交里程碑", "refresh_actor":"刷新 Actor"}
+func validateCaseSteps(tc testCase) error { for i, step := range tc.Steps { if _, ok := supportedActions[step.Action]; !ok { return fmt.Errorf("unsupported action at step %d: %s", i+1, step.Action) } }; return nil }
 type assertion struct { Name string `json:"name"`; Metric string `json:"metric"`; Op string `json:"op"`; Expected float64 `json:"expected"` }
 type assertionResult struct { Name string `json:"name"`; Metric string `json:"metric"`; Actual float64 `json:"actual"`; Expected float64 `json:"expected"`; Passed bool `json:"passed"`; Error string `json:"error,omitempty"` }
 
 func evaluateAssertions(r *report, path string, metrics map[string]float64) error {
 	data, err := os.ReadFile(path); if err != nil { return fmt.Errorf("read test case: %w", err) }
-	var tc testCase; if err := json.Unmarshal(data, &tc); err != nil { return fmt.Errorf("parse test case: %w", err) }
+	var tc testCase; if err := json.Unmarshal(data, &tc); err != nil { return fmt.Errorf("parse test case: %w", err) }; if err := validateCaseSteps(tc); err != nil { return err }
 	failed := 0
 	for _, a := range tc.Assertions {
 		actual, ok := metrics[a.Metric]; passed := false; msg := ""
