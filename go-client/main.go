@@ -73,6 +73,12 @@ type testCase struct {
 type caseStep struct { Action string `json:"action"`; Params map[string]any `json:"params"`; SaveAs string `json:"save_as"` }
 var supportedActions = map[string]string{"load_actor":"加载 Actor", "give_harvest":"生成果实", "submit_milestone_v2":"提交里程碑", "refresh_actor":"刷新 Actor"}
 func validateCaseSteps(tc testCase) error { for i, step := range tc.Steps { if _, ok := supportedActions[step.Action]; !ok { return fmt.Errorf("unsupported action at step %d: %s", i+1, step.Action) } }; return nil }
+func validateExecutionOrder(tc testCase) error {
+	if len(tc.Steps) == 0 { return fmt.Errorf("test case has no steps") }
+	last := ""
+	for _, step := range tc.Steps { if step.Action == "load_actor" || step.Action == "give_harvest" || step.Action == "submit_milestone_v2" || step.Action == "refresh_actor" { if last == "submit_milestone_v2" && step.Action != "refresh_actor" { return fmt.Errorf("refresh_actor must follow submit_milestone_v2") }; last = step.Action } }
+	return nil
+}
 type assertion struct { Name string `json:"name"`; Metric string `json:"metric"`; Op string `json:"op"`; Expected float64 `json:"expected"` }
 type assertionResult struct { Name string `json:"name"`; Metric string `json:"metric"`; Actual float64 `json:"actual"`; Expected float64 `json:"expected"`; Passed bool `json:"passed"`; Error string `json:"error,omitempty"` }
 
@@ -320,6 +326,8 @@ func run(r *report, host string, port int, casePath string) error {
 	if err != nil { return fmt.Errorf("read test case: %w", err) }
 	var tc testCase
 	if err := json.Unmarshal(caseData, &tc); err != nil { return fmt.Errorf("parse test case: %w", err) }
+	if err := validateCaseSteps(tc); err != nil { return err }
+	if err := validateExecutionOrder(tc); err != nil { return err }
 	harvestCount := 2
 	for _, step := range tc.Steps {
 		if step.Action == "give_harvest" {
