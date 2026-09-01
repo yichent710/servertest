@@ -129,6 +129,14 @@ bash scripts/run_local_smoke.sh
 PYTHONPATH=src python3 -m severtest.server
 ```
 
+启动后直接打开测试工作台：
+
+```text
+http://127.0.0.1:8088/
+```
+
+工作台包含流程总览、用例及评审详情、环境配置、单个/批量执行、任务状态自动刷新和可读测试报告。前端由同一个API进程提供，不需要额外启动静态文件服务。
+
 接口：
 
 ```bash

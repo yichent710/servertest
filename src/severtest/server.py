@@ -14,7 +14,18 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 CASES = ROOT / "cases"
 REPORTS = ROOT / "reports"
+WEB_INDEX = ROOT / "web" / "index.html"
 RUNS: dict[str, dict[str, Any]] = {}
+RUN_ENV_KEYS = (
+    "UID_VALUE",
+    "GATE_HOST",
+    "GATE_PORT",
+    "NETWORK",
+    "REDIS_CONTAINER",
+    "GARDEN_CONTAINER",
+    "BUILD",
+    "PREPARE_SID",
+)
 
 
 def diagnose(report: dict[str, Any] | None, exit_code: int) -> dict[str, Any]:
@@ -48,6 +59,38 @@ def load_generated_report(stdout: str) -> tuple[str | None, dict[str, Any] | Non
         return str(path), None
 
 
+def load_cases() -> list[dict[str, Any]]:
+    cases = []
+    for path in sorted(CASES.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        review = data.get("review", {})
+        cases.append(
+            {
+                "id": data.get("id", path.stem),
+                "name": data.get("name", path.stem),
+                "file": path.name,
+                "activity_id": data.get("activity_id"),
+                "review_status": review.get("status", "draft"),
+                "review_iteration": review.get("iteration", 0),
+                "step_count": len(data.get("steps", [])),
+                "assertion_count": len(data.get("assertions", [])),
+            }
+        )
+    return cases
+
+
+def run_summary() -> dict[str, int]:
+    totals = {"total": len(RUNS), "queued": 0, "running": 0, "passed": 0, "failed": 0}
+    for run in RUNS.values():
+        status = run.get("status")
+        if status in totals:
+            totals[status] += 1
+    return totals
+
+
 def start_run(case: str, env: dict[str, str]) -> str:
     run_id = uuid.uuid4().hex
     RUNS[run_id] = {"id": run_id, "case": case, "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
@@ -67,6 +110,13 @@ def start_run(case: str, env: dict[str, str]) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def send_html(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)
@@ -84,20 +134,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
+        if self.path in ("/", "/index.html"):
+            try:
+                return self.send_html(200, WEB_INDEX.read_bytes())
+            except OSError:
+                return self.send_html(500, b"SeverTest web console is unavailable")
         if self.path == "/health":
             return self.send_json(200, {"status": "ok"})
+        if self.path == "/summary":
+            cases = load_cases()
+            return self.send_json(200, {"cases": {"total": len(cases), "approved": sum(item["review_status"] == "approved" for item in cases), "pending_review": sum(item["review_status"] != "approved" for item in cases)}, "runs": run_summary()})
         if self.path == "/cases":
-            cases = []
-            for path in sorted(CASES.glob("*.json")):
-                try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
-                    review = data.get("review", {})
-                    cases.append({"id": data.get("id", path.stem), "name": data.get("name", path.stem), "file": path.name, "review_status": review.get("status", "draft"), "review_iteration": review.get("iteration", 0)})
-                except (OSError, ValueError):
-                    continue
-            return self.send_json(200, {"cases": cases})
+            return self.send_json(200, {"cases": load_cases()})
+        if self.path.startswith("/cases/"):
+            name = self.path.removeprefix("/cases/")
+            path = CASES / name
+            if Path(name).name != name or not path.is_file():
+                return self.send_json(404, {"error": "case not found"})
+            try:
+                return self.send_json(200, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                return self.send_json(500, {"error": "case cannot be read"})
         if self.path == "/runs":
-            return self.send_json(200, {"runs": list(RUNS.values())[-50:]})
+            runs = sorted(RUNS.values(), key=lambda item: item["created_at"], reverse=True)
+            return self.send_json(200, {"runs": runs[:50]})
         if self.path.startswith("/runs/"):
             run = RUNS.get(self.path.removeprefix("/runs/"))
             return self.send_json(200 if run else 404, run or {"error": "run not found"})
@@ -108,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(404, {"error": "not found"})
         try:
             payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
-            env = {key: str(payload[key]) for key in ("UID_VALUE", "GATE_HOST", "GATE_PORT") if key in payload}
+            env = {key: str(payload[key]) for key in RUN_ENV_KEYS if key in payload}
             requested = payload.get("cases", payload.get("case"))
             if isinstance(requested, str):
                 requested = [requested]

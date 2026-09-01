@@ -1,6 +1,6 @@
 import unittest
 
-from severtest.server import diagnose
+from severtest.server import RUNS, diagnose, run_summary
 
 
 class DiagnosisTest(unittest.TestCase):
@@ -18,6 +18,12 @@ class DiagnosisTest(unittest.TestCase):
 
     def test_reports_success(self):
         self.assertEqual(diagnose({"events": [], "assertions": []}, 0)["title"], "测试通过")
+
+    def test_summarizes_run_statuses(self):
+        RUNS.clear()
+        RUNS.update({"one": {"status": "passed"}, "two": {"status": "failed"}, "three": {"status": "running"}})
+        self.assertEqual(run_summary(), {"total": 3, "queued": 0, "running": 1, "passed": 1, "failed": 1})
+        RUNS.clear()
 
 
 if __name__ == "__main__":
