@@ -10,11 +10,15 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = ROOT / "cases"
 REPORTS = ROOT / "reports"
 WEB_INDEX = ROOT / "web" / "index.html"
+REQUIREMENTS = ROOT / "requirements"
+MAX_REQUIREMENT_SIZE = 20 * 1024 * 1024
+ALLOWED_REQUIREMENT_SUFFIXES = {".md", ".txt", ".pdf", ".doc", ".docx"}
 RUNS: dict[str, dict[str, Any]] = {}
 RUN_ENV_KEYS = (
     "UID_VALUE",
@@ -91,6 +95,29 @@ def run_summary() -> dict[str, int]:
     return totals
 
 
+def validate_requirement_name(name: str) -> str:
+    normalized = Path(name).name.strip()
+    if not normalized or normalized in {".", ".."} or normalized != name.strip():
+        raise ValueError("invalid requirement filename")
+    if Path(normalized).suffix.lower() not in ALLOWED_REQUIREMENT_SUFFIXES:
+        raise ValueError("requirement must be md, txt, pdf, doc, or docx")
+    if any(ord(character) < 32 for character in normalized):
+        raise ValueError("invalid requirement filename")
+    return normalized
+
+
+def list_requirements() -> list[dict[str, Any]]:
+    if not REQUIREMENTS.exists():
+        return []
+    documents = []
+    for path in REQUIREMENTS.iterdir():
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        stat = path.stat()
+        documents.append({"name": path.name, "size": stat.st_size, "uploaded_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), "status": "uploaded"})
+    return sorted(documents, key=lambda item: item["uploaded_at"], reverse=True)
+
+
 def start_run(case: str, env: dict[str, str]) -> str:
     run_id = uuid.uuid4().hex
     RUNS[run_id] = {"id": run_id, "case": case, "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
@@ -130,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type,X-Filename")
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -143,7 +170,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"status": "ok"})
         if self.path == "/summary":
             cases = load_cases()
-            return self.send_json(200, {"cases": {"total": len(cases), "approved": sum(item["review_status"] == "approved" for item in cases), "pending_review": sum(item["review_status"] != "approved" for item in cases)}, "runs": run_summary()})
+            return self.send_json(200, {"requirements": {"total": len(list_requirements())}, "cases": {"total": len(cases), "approved": sum(item["review_status"] == "approved" for item in cases), "pending_review": sum(item["review_status"] != "approved" for item in cases)}, "runs": run_summary()})
+        if self.path == "/requirements":
+            return self.send_json(200, {"requirements": list_requirements()})
         if self.path == "/cases":
             return self.send_json(200, {"cases": load_cases()})
         if self.path.startswith("/cases/"):
@@ -164,6 +193,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        if self.path == "/requirements":
+            try:
+                name = validate_requirement_name(unquote(self.headers.get("X-Filename", "")))
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise ValueError("requirement file is empty")
+                if length > MAX_REQUIREMENT_SIZE:
+                    raise ValueError("requirement file exceeds 20 MB")
+                content = self.rfile.read(length)
+                if len(content) != length:
+                    raise ValueError("requirement upload is incomplete")
+                REQUIREMENTS.mkdir(parents=True, exist_ok=True)
+                target = REQUIREMENTS / name
+                if target.exists():
+                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                    target = target.with_name(f"{target.stem}-{stamp}{target.suffix}")
+                target.write_bytes(content)
+                return self.send_json(201, {"name": target.name, "size": len(content), "status": "uploaded"})
+            except (OSError, ValueError) as exc:
+                return self.send_json(400, {"error": str(exc)})
         if self.path != "/runs":
             return self.send_json(404, {"error": "not found"})
         try:

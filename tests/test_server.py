@@ -1,6 +1,6 @@
 import unittest
 
-from severtest.server import RUNS, diagnose, run_summary
+from severtest.server import RUNS, diagnose, run_summary, validate_requirement_name
 
 
 class DiagnosisTest(unittest.TestCase):
@@ -21,6 +21,17 @@ class DiagnosisTest(unittest.TestCase):
 
     def test_summarizes_run_statuses(self):
         RUNS.clear()
+
+    def test_accepts_supported_requirement_name(self):
+        self.assertEqual(validate_requirement_name("团队活动需求文档.docx"), "团队活动需求文档.docx")
+
+    def test_rejects_requirement_path(self):
+        with self.assertRaises(ValueError):
+            validate_requirement_name("../需求文档.md")
+
+    def test_rejects_unsupported_requirement_type(self):
+        with self.assertRaises(ValueError):
+            validate_requirement_name("需求文档.exe")
         RUNS.update({"one": {"status": "passed"}, "two": {"status": "failed"}, "three": {"status": "running"}})
         self.assertEqual(run_summary(), {"total": 3, "queued": 0, "running": 1, "passed": 1, "failed": 1})
         RUNS.clear()
