@@ -52,48 +52,153 @@ type event struct {
 }
 
 type report struct {
-	RunID      string  `json:"run_id"`
-	UID        uint64  `json:"uid"`
-	ActivityID int32   `json:"activity_id"`
-	TestCase   string  `json:"test_case,omitempty"`
-	Status     string  `json:"status"`
-	Events     []event `json:"events"`
-	Assertions []assertionResult `json:"assertions,omitempty"`
-	Summary string `json:"summary,omitempty"`
-	FailureAnalysis string `json:"failure_analysis,omitempty"`
-	PlannedSteps []string `json:"planned_steps,omitempty"`
+	RunID           string            `json:"run_id"`
+	UID             uint64            `json:"uid"`
+	ActivityID      int32             `json:"activity_id"`
+	TestCase        string            `json:"test_case,omitempty"`
+	Status          string            `json:"status"`
+	Events          []event           `json:"events"`
+	Assertions      []assertionResult `json:"assertions,omitempty"`
+	Summary         string            `json:"summary,omitempty"`
+	FailureAnalysis string            `json:"failure_analysis,omitempty"`
+	PlannedSteps    []string          `json:"planned_steps,omitempty"`
 }
 
 type testCase struct {
-	ID string `json:"id"`
-	Name string `json:"name"`
-	Preconditions []any `json:"preconditions"`
-	Steps []caseStep `json:"steps"`
-	Assertions []assertion `json:"assertions"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	Preconditions []any       `json:"preconditions"`
+	Steps         []caseStep  `json:"steps"`
+	Assertions    []assertion `json:"assertions"`
 }
-type caseStep struct { Action string `json:"action"`; Params map[string]any `json:"params"`; SaveAs string `json:"save_as"` }
-var supportedActions = map[string]string{"load_actor":"加载 Actor", "give_harvest":"生成果实", "submit_milestone_v2":"提交里程碑", "refresh_actor":"刷新 Actor"}
-func validateCaseSteps(tc testCase) error { for i, step := range tc.Steps { if _, ok := supportedActions[step.Action]; !ok { return fmt.Errorf("unsupported action at step %d: %s", i+1, step.Action) } }; return nil }
-func validateExecutionOrder(tc testCase) error {
-	if len(tc.Steps) == 0 { return fmt.Errorf("test case has no steps") }
-	last := ""
-	for _, step := range tc.Steps { if step.Action == "load_actor" || step.Action == "give_harvest" || step.Action == "submit_milestone_v2" || step.Action == "refresh_actor" { if last == "submit_milestone_v2" && step.Action != "refresh_actor" { return fmt.Errorf("refresh_actor must follow submit_milestone_v2") }; last = step.Action } }
+type caseStep struct {
+	Action string         `json:"action"`
+	Params map[string]any `json:"params"`
+	SaveAs string         `json:"save_as"`
+}
+type actorSnapshot struct {
+	Version          int64
+	Score            int32
+	Draws            int32
+	FinalClaimed     bool
+	HarvestIDs       []int64
+	ActivityReadable bool
+}
+type executionContext struct {
+	Before        actorSnapshot
+	After         actorSnapshot
+	NewHarvestIDs []int64
+	Submit        *pbGardenClient.SubmitMilestoneV2FruitsRsp
+}
+type actionHandler func(context.Context, *testClient, *executionContext, caseStep) (map[string]any, error)
+
+var actionHandlers = map[string]actionHandler{
+	"load_actor":          executeLoadActor,
+	"give_harvest":        executeGiveHarvest,
+	"submit_milestone_v2": executeSubmitMilestoneV2,
+	"refresh_actor":       executeRefreshActor,
+}
+
+func validateCaseSteps(tc testCase) error {
+	for i, step := range tc.Steps {
+		if _, ok := actionHandlers[step.Action]; !ok {
+			return fmt.Errorf("unsupported action at step %d: %s", i+1, step.Action)
+		}
+	}
 	return nil
 }
-type assertion struct { Name string `json:"name"`; Metric string `json:"metric"`; Op string `json:"op"`; Expected float64 `json:"expected"` }
-type assertionResult struct { Name string `json:"name"`; Metric string `json:"metric"`; Actual float64 `json:"actual"`; Expected float64 `json:"expected"`; Passed bool `json:"passed"`; Error string `json:"error,omitempty"` }
+func validateExecutionOrder(tc testCase) error {
+	if len(tc.Steps) == 0 {
+		return fmt.Errorf("test case has no steps")
+	}
+	loaded, harvested, submitted := false, false, false
+	for index, step := range tc.Steps {
+		switch step.Action {
+		case "load_actor":
+			loaded = true
+		case "give_harvest":
+			if !loaded {
+				return fmt.Errorf("step %d give_harvest requires load_actor", index+1)
+			}
+			harvested = true
+		case "submit_milestone_v2":
+			if !harvested {
+				return fmt.Errorf("step %d submit_milestone_v2 requires give_harvest", index+1)
+			}
+			submitted = true
+		case "refresh_actor":
+			if !submitted {
+				return fmt.Errorf("step %d refresh_actor requires submit_milestone_v2", index+1)
+			}
+		}
+	}
+	if !submitted {
+		return fmt.Errorf("test case must include submit_milestone_v2")
+	}
+	return nil
+}
+
+type assertion struct {
+	Name     string  `json:"name"`
+	Metric   string  `json:"metric"`
+	Op       string  `json:"op"`
+	Expected float64 `json:"expected"`
+}
+type assertionResult struct {
+	Name     string  `json:"name"`
+	Metric   string  `json:"metric"`
+	Actual   float64 `json:"actual"`
+	Expected float64 `json:"expected"`
+	Passed   bool    `json:"passed"`
+	Error    string  `json:"error,omitempty"`
+}
 
 func evaluateAssertions(r *report, path string, metrics map[string]float64) error {
-	data, err := os.ReadFile(path); if err != nil { return fmt.Errorf("read test case: %w", err) }
-	var tc testCase; if err := json.Unmarshal(data, &tc); err != nil { return fmt.Errorf("parse test case: %w", err) }; if err := validateCaseSteps(tc); err != nil { return err }
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read test case: %w", err)
+	}
+	var tc testCase
+	if err := json.Unmarshal(data, &tc); err != nil {
+		return fmt.Errorf("parse test case: %w", err)
+	}
+	if err := validateCaseSteps(tc); err != nil {
+		return err
+	}
 	failed := 0
 	for _, a := range tc.Assertions {
-		actual, ok := metrics[a.Metric]; passed := false; msg := ""
-		if !ok { msg = "metric not found" } else { switch strings.ToLower(a.Op) { case "eq": passed = actual == a.Expected; case "ne": passed = actual != a.Expected; case "gt": passed = actual > a.Expected; case "gte": passed = actual >= a.Expected; case "lt": passed = actual < a.Expected; case "lte": passed = actual <= a.Expected; default: msg = "unsupported operator" } }
-		if !passed { failed++ }
-		r.Assertions = append(r.Assertions, assertionResult{Name:a.Name, Metric:a.Metric, Actual:actual, Expected:a.Expected, Passed:passed, Error:msg})
+		actual, ok := metrics[a.Metric]
+		passed := false
+		msg := ""
+		if !ok {
+			msg = "metric not found"
+		} else {
+			switch strings.ToLower(a.Op) {
+			case "eq":
+				passed = actual == a.Expected
+			case "ne":
+				passed = actual != a.Expected
+			case "gt":
+				passed = actual > a.Expected
+			case "gte":
+				passed = actual >= a.Expected
+			case "lt":
+				passed = actual < a.Expected
+			case "lte":
+				passed = actual <= a.Expected
+			default:
+				msg = "unsupported operator"
+			}
+		}
+		if !passed {
+			failed++
+		}
+		r.Assertions = append(r.Assertions, assertionResult{Name: a.Name, Metric: a.Metric, Actual: actual, Expected: a.Expected, Passed: passed, Error: msg})
 	}
-	if failed > 0 { return fmt.Errorf("%d assertion(s) failed", failed) }; return nil
+	if failed > 0 {
+		return fmt.Errorf("%d assertion(s) failed", failed)
+	}
+	return nil
 }
 
 func (r *report) add(step, status string, details map[string]any) {
@@ -322,19 +427,95 @@ func explainFailure(message string) string {
 	}
 }
 
+func readSnapshot(c *testClient) (actorSnapshot, error) {
+	version, score, draws, claimed, ids, readable, err := c.snapshot()
+	return actorSnapshot{Version: version, Score: score, Draws: draws, FinalClaimed: claimed, HarvestIDs: ids, ActivityReadable: readable}, err
+}
+
+func executeLoadActor(ctx context.Context, c *testClient, state *executionContext, _ caseStep) (map[string]any, error) {
+	if err := c.refresh(ctx); err != nil {
+		return nil, fmt.Errorf("load initial actor: %w", err)
+	}
+	snapshot, err := readSnapshot(c)
+	if err != nil {
+		return nil, err
+	}
+	state.Before = snapshot
+	return map[string]any{"actor_version": snapshot.Version, "score": snapshot.Score, "draw_count": snapshot.Draws, "harvest_count": len(snapshot.HarvestIDs), "activity_state_readable": snapshot.ActivityReadable}, nil
+}
+
+func executeGiveHarvest(ctx context.Context, c *testClient, state *executionContext, step caseStep) (map[string]any, error) {
+	count := 2
+	if value, ok := step.Params["count"].(float64); ok && value > 0 {
+		count = int(value)
+	}
+	for i := 0; i < count; i++ {
+		if _, err := c.CallBodyAndWait(&pbGardenClient.DebugGiveHarvestReq{HarvestId: harvestTypeID, Weight: 3, VaryList: []int64{activityVaryID}}); err != nil {
+			return nil, fmt.Errorf("give harvest %d: %w", i+1, err)
+		}
+	}
+	if err := c.refresh(ctx); err != nil {
+		return nil, fmt.Errorf("refresh after give harvest: %w", err)
+	}
+	snapshot, err := readSnapshot(c)
+	if err != nil {
+		return nil, err
+	}
+	state.NewHarvestIDs = difference(snapshot.HarvestIDs, state.Before.HarvestIDs)
+	if len(state.NewHarvestIDs) != count {
+		return nil, fmt.Errorf("expected %d new harvests, got %d: %v", count, len(state.NewHarvestIDs), state.NewHarvestIDs)
+	}
+	return map[string]any{"count": count, "harvest_ids": state.NewHarvestIDs, "vary_id": activityVaryID}, nil
+}
+
+func executeSubmitMilestoneV2(_ context.Context, c *testClient, state *executionContext, _ caseStep) (map[string]any, error) {
+	if len(state.NewHarvestIDs) == 0 {
+		return nil, fmt.Errorf("submit_milestone_v2 requires give_harvest output")
+	}
+	raw, err := c.CallBodyAndWait(&pbGardenClient.SubmitMilestoneV2FruitsReq{ActivityId: activityID, HarvestIds: state.NewHarvestIDs})
+	if err != nil {
+		return nil, fmt.Errorf("submit fruits: %w", err)
+	}
+	rsp, ok := raw.(*pbGardenClient.SubmitMilestoneV2FruitsRsp)
+	if !ok {
+		return nil, fmt.Errorf("unexpected submit response %T", raw)
+	}
+	state.Submit = rsp
+	return map[string]any{"submitted_score": rsp.SubmittedScore, "overflow_score": rsp.OverflowScore, "earned_vitality": rsp.EarnedVitality, "draw_rewards": rsp.DrawRewards, "final_rewards": rsp.FinalRewards}, nil
+}
+
+func executeRefreshActor(ctx context.Context, c *testClient, state *executionContext, _ caseStep) (map[string]any, error) {
+	if err := c.refresh(ctx); err != nil {
+		return nil, fmt.Errorf("refresh final actor: %w", err)
+	}
+	snapshot, err := readSnapshot(c)
+	if err != nil {
+		return nil, err
+	}
+	state.After = snapshot
+	if containsAny(snapshot.HarvestIDs, state.NewHarvestIDs) {
+		return nil, fmt.Errorf("final state still contains submitted fruits: %v", state.NewHarvestIDs)
+	}
+	return map[string]any{"actor_version": snapshot.Version, "score": snapshot.Score, "draw_count": snapshot.Draws, "final_reward_claimed": snapshot.FinalClaimed, "consumed_harvest_ids": state.NewHarvestIDs, "activity_state_readable": snapshot.ActivityReadable}, nil
+}
+
 func run(r *report, host string, port int, casePath string) error {
 	caseData, err := os.ReadFile(casePath)
-	if err != nil { return fmt.Errorf("read test case: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read test case: %w", err)
+	}
 	var tc testCase
-	if err := json.Unmarshal(caseData, &tc); err != nil { return fmt.Errorf("parse test case: %w", err) }
-	if err := validateCaseSteps(tc); err != nil { return err }
-	if err := validateExecutionOrder(tc); err != nil { return err }
-	for _, step := range tc.Steps { r.PlannedSteps = append(r.PlannedSteps, step.Action) }
-	harvestCount := 2
+	if err := json.Unmarshal(caseData, &tc); err != nil {
+		return fmt.Errorf("parse test case: %w", err)
+	}
+	if err := validateCaseSteps(tc); err != nil {
+		return err
+	}
+	if err := validateExecutionOrder(tc); err != nil {
+		return err
+	}
 	for _, step := range tc.Steps {
-		if step.Action == "give_harvest" {
-			if value, ok := step.Params["count"].(float64); ok && value > 0 { harvestCount = int(value) }
-		}
+		r.PlannedSteps = append(r.PlannedSteps, step.Action)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -344,70 +525,27 @@ func run(r *report, host string, port int, casePath string) error {
 	}
 	defer c.Stop()
 	r.add("connect", "PASSED", map[string]any{"host": host, "port": port})
-	r.add("load_actor", "RUNNING", map[string]any{"source": "case step"})
-
-	if err := c.refresh(ctx); err != nil {
-		return fmt.Errorf("load initial actor: %w", err)
-	}
-	r.add("load_actor", "PASSED", nil)
-	beforeVersion, beforeScore, beforeDraws, _, beforeIDs, beforeReadable, err := c.snapshot()
-	if err != nil {
-		return err
-	}
-	r.add("initial_state", "PASSED", map[string]any{"score": beforeScore, "draw_count": beforeDraws, "harvest_count": len(beforeIDs), "activity_state_readable": beforeReadable})
-
-	r.add("give_harvest", "RUNNING", map[string]any{"count": harvestCount})
-	for i := 0; i < harvestCount; i++ {
-		if _, err := c.CallBodyAndWait(&pbGardenClient.DebugGiveHarvestReq{HarvestId: harvestTypeID, Weight: 3, VaryList: []int64{activityVaryID}}); err != nil {
-			return fmt.Errorf("give harvest %d: %w", i+1, err)
+	state := &executionContext{}
+	for index, step := range tc.Steps {
+		r.add(step.Action, "RUNNING", map[string]any{"step_number": index + 1})
+		details, err := actionHandlers[step.Action](ctx, c, state, step)
+		if err != nil {
+			r.add(step.Action, "FAILED", map[string]any{"step_number": index + 1, "error": err.Error()})
+			return fmt.Errorf("step %d %s: %w", index+1, step.Action, err)
 		}
+		if details == nil {
+			details = map[string]any{}
+		}
+		details["step_number"] = index + 1
+		r.add(step.Action, "PASSED", details)
 	}
-	if err := c.refresh(ctx); err != nil {
-		return fmt.Errorf("refresh after give harvest: %w", err)
+	if state.Submit == nil {
+		return fmt.Errorf("test case did not execute submit_milestone_v2")
 	}
-	_, _, _, _, afterIDs, _, err := c.snapshot()
-	if err != nil {
+	metrics := map[string]float64{"submit.submitted_score": float64(state.Submit.SubmittedScore), "submit.overflow_score": float64(state.Submit.OverflowScore), "submit.earned_vitality": float64(state.Submit.EarnedVitality), "before.score": float64(state.Before.Score), "after.score": float64(state.After.Score), "before.draw_count": float64(state.Before.Draws), "after.draw_count": float64(state.After.Draws), "before.actor_version": float64(state.Before.Version), "after.actor_version": float64(state.After.Version), "consumed_fruits": 1}
+	if err := evaluateAssertions(r, casePath, metrics); err != nil {
 		return err
 	}
-	newIDs := difference(afterIDs, beforeIDs)
-	if len(newIDs) != harvestCount {
-		return fmt.Errorf("expected %d new harvests, got %d: %v", harvestCount, len(newIDs), newIDs)
-	}
-	r.add("give_harvest", "PASSED", map[string]any{"harvest_ids": newIDs, "vary_id": activityVaryID})
-	r.add("submit_milestone_v2", "RUNNING", nil)
-
-	raw, err := c.CallBodyAndWait(&pbGardenClient.SubmitMilestoneV2FruitsReq{ActivityId: activityID, HarvestIds: newIDs})
-	if err != nil {
-		return fmt.Errorf("submit fruits: %w", err)
-	}
-	rsp, ok := raw.(*pbGardenClient.SubmitMilestoneV2FruitsRsp)
-	if !ok {
-		return fmt.Errorf("unexpected submit response %T", raw)
-	}
-	r.add("submit", "PASSED", map[string]any{
-		"submitted_score": rsp.SubmittedScore, "overflow_score": rsp.OverflowScore,
-		"earned_vitality": rsp.EarnedVitality, "draw_rewards": rsp.DrawRewards, "final_rewards": rsp.FinalRewards,
-	})
-	r.add("submit_milestone_v2", "PASSED", nil)
-	r.add("refresh_actor", "RUNNING", nil)
-
-	if err := c.refresh(ctx); err != nil {
-		return fmt.Errorf("refresh final actor: %w", err)
-	}
-	version, finalScore, finalDraws, finalClaimed, finalIDs, finalReadable, err := c.snapshot()
-	if err != nil {
-		return err
-	}
-	if containsAny(finalIDs, newIDs) {
-		return fmt.Errorf("final state mismatch score=%d draws=%d remaining_test_fruits=%v", finalScore, finalDraws, containsAny(finalIDs, newIDs))
-	}
-	r.add("final_state", "PASSED", map[string]any{
-		"actor_version": version, "score": finalScore, "draw_count": finalDraws,
-		"final_reward_claimed": finalClaimed, "consumed_harvest_ids": newIDs, "activity_state_readable": finalReadable,
-	})
-	r.add("refresh_actor", "PASSED", nil)
-	metrics := map[string]float64{"submit.submitted_score": float64(rsp.SubmittedScore), "submit.overflow_score": float64(rsp.OverflowScore), "submit.earned_vitality": float64(rsp.EarnedVitality), "before.score": float64(beforeScore), "after.score": float64(finalScore), "before.draw_count": float64(beforeDraws), "after.draw_count": float64(finalDraws), "before.actor_version": float64(beforeVersion), "after.actor_version": float64(version), "consumed_fruits": 1}
-	if err := evaluateAssertions(r, casePath, metrics); err != nil { return err }
 	return nil
 }
 
