@@ -21,8 +21,10 @@ import (
 
 	"git.17zjh.com/zhengzunjie/garden/app/Garden/actor"
 	"git.17zjh.com/zhengzunjie/garden/app/Garden/actor/act/actDef"
+	"git.17zjh.com/zhengzunjie/garden/app/Garden/actor/act/actGve"
 	"git.17zjh.com/zhengzunjie/garden/app/Garden/actor/act/actManager"
 	"git.17zjh.com/zhengzunjie/garden/app/Garden/actor/act/actMilestoneV2"
+	"git.17zjh.com/zhengzunjie/garden/app/Garden/actor/def"
 	"git.17zjh.com/zhengzunjie/garden/app/Garden/actor/harvests"
 	"git.17zjh.com/zhengzunjie/garden/internal/config/garden"
 	pbGardenActor "git.17zjh.com/zhengzunjie/garden/pb/garden/pbGardenActor/pbActor"
@@ -67,6 +69,7 @@ type report struct {
 type testCase struct {
 	ID            string      `json:"id"`
 	Name          string      `json:"name"`
+	ActivityID    int32       `json:"activity_id"`
 	Preconditions []any       `json:"preconditions"`
 	Steps         []caseStep  `json:"steps"`
 	Assertions    []assertion `json:"assertions"`
@@ -85,10 +88,17 @@ type actorSnapshot struct {
 	ActivityReadable bool
 }
 type executionContext struct {
-	Before        actorSnapshot
-	After         actorSnapshot
-	NewHarvestIDs []int64
-	Submit        *pbGardenClient.SubmitMilestoneV2FruitsRsp
+	ActivityID       int32
+	Before           actorSnapshot
+	After            actorSnapshot
+	NewHarvestIDs    []int64
+	Submit           *pbGardenClient.SubmitMilestoneV2FruitsRsp
+	GveScoreBefore   int64
+	GveScoreAfter    int64
+	GveClaimedBefore bool
+	GveClaimedAfter  bool
+	RewardItemBefore int64
+	RewardItemAfter  int64
 }
 type actionHandler func(context.Context, *testClient, *executionContext, caseStep) (map[string]any, error)
 
@@ -97,6 +107,8 @@ var actionHandlers = map[string]actionHandler{
 	"give_harvest":        executeGiveHarvest,
 	"submit_milestone_v2": executeSubmitMilestoneV2,
 	"refresh_actor":       executeRefreshActor,
+	"set_gve_score":       executeSetGveScore,
+	"claim_gve_reward":    executeClaimGveReward,
 }
 
 func validateCaseSteps(tc testCase) error {
@@ -111,7 +123,7 @@ func validateExecutionOrder(tc testCase) error {
 	if len(tc.Steps) == 0 {
 		return fmt.Errorf("test case has no steps")
 	}
-	loaded, harvested, submitted := false, false, false
+	loaded, harvested, submitted, gveScoreSet := false, false, false, false
 	for index, step := range tc.Steps {
 		switch step.Action {
 		case "load_actor":
@@ -127,14 +139,21 @@ func validateExecutionOrder(tc testCase) error {
 			}
 			submitted = true
 		case "refresh_actor":
-			if !submitted {
-				return fmt.Errorf("step %d refresh_actor requires submit_milestone_v2", index+1)
+			if !loaded {
+				return fmt.Errorf("step %d refresh_actor requires load_actor", index+1)
+			}
+		case "set_gve_score":
+			if !loaded {
+				return fmt.Errorf("step %d set_gve_score requires load_actor", index+1)
+			}
+			gveScoreSet = true
+		case "claim_gve_reward":
+			if !gveScoreSet {
+				return fmt.Errorf("step %d claim_gve_reward requires set_gve_score", index+1)
 			}
 		}
 	}
-	if !submitted {
-		return fmt.Errorf("test case must include submit_milestone_v2")
-	}
+	_ = submitted
 	return nil
 }
 
@@ -422,6 +441,8 @@ func explainFailure(message string) string {
 		return "业务断言失败：对照报告中的实际值和期望值，确认需求口径、配置和服务端状态变更。"
 	case strings.Contains(message, "submit fruits"):
 		return "提交请求失败：检查请求参数、果实归属、活动配置和服务端返回错误码。"
+	case strings.Contains(message, "GVE activity") && strings.Contains(message, "not found in Actor"):
+		return "团队活动数据未进入 Actor：检查 Garden 活动类型注册表是否包含 GVE 类型 12，以及运行镜像是否与活动配置版本一致。"
 	default:
 		return "执行阶段失败：先查看失败步骤的请求结果和 Garden 日志，再按服务端模块定位。"
 	}
@@ -430,6 +451,30 @@ func explainFailure(message string) string {
 func readSnapshot(c *testClient) (actorSnapshot, error) {
 	version, score, draws, claimed, ids, readable, err := c.snapshot()
 	return actorSnapshot{Version: version, Score: score, Draws: draws, FinalClaimed: claimed, HarvestIDs: ids, ActivityReadable: readable}, err
+}
+
+func readGveState(c *testClient, activityID int32, rewardIndex int32, rewardItemID int64) (int64, bool, int64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	full, ok := c.state.ActManager.ActData.Load(garden.ActivityId(activityID))
+	if !ok || full == nil {
+		return 0, false, 0, fmt.Errorf("GVE activity %d not found in Actor", activityID)
+	}
+	if full.Wrapper.RealIns == nil && !clientActRegistry.Recover(&full.Wrapper) {
+		return 0, false, 0, fmt.Errorf("GVE activity %d cannot be recovered", activityID)
+	}
+	gve, ok := full.Wrapper.RealIns.(*actGve.ActGve)
+	if !ok || gve == nil {
+		return 0, false, 0, fmt.Errorf("activity %d is not GVE", activityID)
+	}
+	itemCount := int64(0)
+	c.state.Bag.RangeItems(func(_ int64, item def.IBagItem) bool {
+		if int64(item.GetItemTypeId()) == rewardItemID {
+			itemCount += item.GetNum()
+		}
+		return true
+	})
+	return gve.GetScore(), gve.ClaimedList.FindIndex(rewardIndex) >= 0, itemCount, nil
 }
 
 func executeLoadActor(ctx context.Context, c *testClient, state *executionContext, _ caseStep) (map[string]any, error) {
@@ -499,6 +544,56 @@ func executeRefreshActor(ctx context.Context, c *testClient, state *executionCon
 	return map[string]any{"actor_version": snapshot.Version, "score": snapshot.Score, "draw_count": snapshot.Draws, "final_reward_claimed": snapshot.FinalClaimed, "consumed_harvest_ids": state.NewHarvestIDs, "activity_state_readable": snapshot.ActivityReadable}, nil
 }
 
+func executeSetGveScore(ctx context.Context, c *testClient, state *executionContext, step caseStep) (map[string]any, error) {
+	score, ok := step.Params["score"].(float64)
+	if !ok || score < 0 {
+		return nil, fmt.Errorf("set_gve_score requires non-negative score")
+	}
+	rewardIndex := int32(numberParam(step.Params, "reward_index", 1))
+	rewardItemID := int64(numberParam(step.Params, "reward_item_id", 0))
+	before, claimed, itemCount, err := readGveState(c, state.ActivityID, rewardIndex, rewardItemID)
+	if err != nil {
+		return nil, err
+	}
+	state.GveScoreBefore, state.GveClaimedBefore, state.RewardItemBefore = before, claimed, itemCount
+	if _, err := c.CallBodyAndWait(&pbGardenClient.DebugSetGveScoreReq{ActId: state.ActivityID, Score: int64(score)}); err != nil {
+		return nil, fmt.Errorf("set GVE score: %w", err)
+	}
+	if err := c.refresh(ctx); err != nil {
+		return nil, fmt.Errorf("refresh after set GVE score: %w", err)
+	}
+	after, _, _, err := readGveState(c, state.ActivityID, rewardIndex, rewardItemID)
+	if err != nil {
+		return nil, err
+	}
+	state.GveScoreAfter = after
+	return map[string]any{"before_score": before, "after_score": after, "target_score": int64(score)}, nil
+}
+
+func executeClaimGveReward(ctx context.Context, c *testClient, state *executionContext, step caseStep) (map[string]any, error) {
+	rewardIndex := int32(numberParam(step.Params, "index", 1))
+	rewardItemID := int64(numberParam(step.Params, "reward_item_id", 0))
+	if _, err := c.CallBodyAndWait(&pbGardenClient.ClaimActGveRewardReq{ActId: state.ActivityID, Index: rewardIndex}); err != nil {
+		return nil, fmt.Errorf("claim GVE reward: %w", err)
+	}
+	if err := c.refresh(ctx); err != nil {
+		return nil, fmt.Errorf("refresh after claim GVE reward: %w", err)
+	}
+	score, claimed, itemCount, err := readGveState(c, state.ActivityID, rewardIndex, rewardItemID)
+	if err != nil {
+		return nil, err
+	}
+	state.GveScoreAfter, state.GveClaimedAfter, state.RewardItemAfter = score, claimed, itemCount
+	return map[string]any{"reward_index": rewardIndex, "claimed": claimed, "reward_item_id": rewardItemID, "reward_item_before": state.RewardItemBefore, "reward_item_after": itemCount}, nil
+}
+
+func numberParam(params map[string]any, key string, fallback float64) float64 {
+	if value, ok := params[key].(float64); ok {
+		return value
+	}
+	return fallback
+}
+
 func run(r *report, host string, port int, casePath string) error {
 	caseData, err := os.ReadFile(casePath)
 	if err != nil {
@@ -514,6 +609,9 @@ func run(r *report, host string, port int, casePath string) error {
 	if err := validateExecutionOrder(tc); err != nil {
 		return err
 	}
+	if tc.ActivityID > 0 {
+		r.ActivityID = tc.ActivityID
+	}
 	for _, step := range tc.Steps {
 		r.PlannedSteps = append(r.PlannedSteps, step.Action)
 	}
@@ -525,7 +623,7 @@ func run(r *report, host string, port int, casePath string) error {
 	}
 	defer c.Stop()
 	r.add("connect", "PASSED", map[string]any{"host": host, "port": port})
-	state := &executionContext{}
+	state := &executionContext{ActivityID: r.ActivityID}
 	for index, step := range tc.Steps {
 		r.add(step.Action, "RUNNING", map[string]any{"step_number": index + 1})
 		details, err := actionHandlers[step.Action](ctx, c, state, step)
@@ -539,14 +637,23 @@ func run(r *report, host string, port int, casePath string) error {
 		details["step_number"] = index + 1
 		r.add(step.Action, "PASSED", details)
 	}
-	if state.Submit == nil {
-		return fmt.Errorf("test case did not execute submit_milestone_v2")
+	metrics := map[string]float64{"before.score": float64(state.Before.Score), "after.score": float64(state.After.Score), "before.draw_count": float64(state.Before.Draws), "after.draw_count": float64(state.After.Draws), "before.actor_version": float64(state.Before.Version), "after.actor_version": float64(state.After.Version), "consumed_fruits": 1, "gve.score.before": float64(state.GveScoreBefore), "gve.score.after": float64(state.GveScoreAfter), "gve.claimed.before": boolMetric(state.GveClaimedBefore), "gve.claimed.after": boolMetric(state.GveClaimedAfter), "gve.reward_item.before": float64(state.RewardItemBefore), "gve.reward_item.after": float64(state.RewardItemAfter)}
+	if state.Submit != nil {
+		metrics["submit.submitted_score"] = float64(state.Submit.SubmittedScore)
+		metrics["submit.overflow_score"] = float64(state.Submit.OverflowScore)
+		metrics["submit.earned_vitality"] = float64(state.Submit.EarnedVitality)
 	}
-	metrics := map[string]float64{"submit.submitted_score": float64(state.Submit.SubmittedScore), "submit.overflow_score": float64(state.Submit.OverflowScore), "submit.earned_vitality": float64(state.Submit.EarnedVitality), "before.score": float64(state.Before.Score), "after.score": float64(state.After.Score), "before.draw_count": float64(state.Before.Draws), "after.draw_count": float64(state.After.Draws), "before.actor_version": float64(state.Before.Version), "after.actor_version": float64(state.After.Version), "consumed_fruits": 1}
 	if err := evaluateAssertions(r, casePath, metrics); err != nil {
 		return err
 	}
 	return nil
+}
+
+func boolMetric(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func difference(values, existing []int64) []int64 {

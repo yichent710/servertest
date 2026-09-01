@@ -1,0 +1,35 @@
+{
+  "id": "gve_claim_first_reward",
+  "name": "团队活动个人积分第一档领奖",
+  "activity_id": 120001,
+  "review": {
+    "status": "approved",
+    "reviewer": "server-pretest-review",
+    "reviewed_at": "2026-09-01",
+    "iteration": 3,
+    "comments": [
+      "领奖响应为空，改为校验 Actor ClaimedList 和背包奖励数量",
+      "设置积分会覆盖原值，仅允许使用专用测试账号",
+      "团队积分同步拆分为独立跨模块用例",
+      "专用账号必须在活动配置生效后首次初始化 Actor"
+    ]
+  },
+  "preconditions": [
+    {"type": "dedicated_test_uid", "uid": 10000023},
+    {"type": "activity_running", "activity_id": 120001},
+    {"type": "player_in_team", "team_code": 679461},
+    {"type": "reward_not_claimed", "index": 1}
+  ],
+  "steps": [
+    {"action": "load_actor"},
+    {"action": "set_gve_score", "params": {"score": 1000, "reward_index": 1, "reward_item_id": 4010048}},
+    {"action": "claim_gve_reward", "params": {"index": 1, "reward_item_id": 4010048}},
+    {"action": "refresh_actor"}
+  ],
+  "assertions": [
+    {"name": "个人积分达到第一档", "metric": "gve.score.after", "op": "eq", "expected": 1000},
+    {"name": "第一档奖励已标记领取", "metric": "gve.claimed.after", "op": "eq", "expected": 1},
+    {"name": "第一档奖励物品到账", "metric": "gve.reward_item.after", "op": "eq", "expected": 5},
+    {"name": "Actor版本递增", "metric": "after.actor_version", "op": "gt", "expected": 0}
+  ]
+}
