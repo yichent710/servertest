@@ -12,11 +12,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+from .workflow import WorkflowError, WorkflowStore
+
 ROOT = Path(__file__).resolve().parents[2]
 CASES = ROOT / "cases"
 REPORTS = ROOT / "reports"
 WEB_INDEX = ROOT / "web" / "index.html"
 REQUIREMENTS = ROOT / "requirements"
+WORKFLOWS = WorkflowStore(REQUIREMENTS / ".workflows")
 MAX_REQUIREMENT_SIZE = 20 * 1024 * 1024
 ALLOWED_REQUIREMENT_SUFFIXES = {".md", ".txt", ".pdf", ".doc", ".docx"}
 RUNS: dict[str, dict[str, Any]] = {}
@@ -109,14 +112,27 @@ def validate_requirement_name(name: str) -> str:
 
 
 def list_requirements() -> list[dict[str, Any]]:
+    documents = [
+        {
+            "id": item["id"],
+            "name": item["filename"],
+            "size": item["size"],
+            "uploaded_at": item["created_at"],
+            "status": item["status"],
+            "status_label": item["status_label"],
+            "stage_started_at": item["stage_started_at"],
+            "current_stage_duration_ms": item["current_stage_duration_ms"],
+        }
+        for item in WORKFLOWS.list()
+    ]
+    managed_paths = {item["source_path"] for item in WORKFLOWS.list()}
     if not REQUIREMENTS.exists():
-        return []
-    documents = []
+        return documents
     for path in REQUIREMENTS.iterdir():
-        if not path.is_file() or path.name.startswith("."):
+        if not path.is_file() or path.name.startswith(".") or str(path) in managed_paths:
             continue
         stat = path.stat()
-        documents.append({"name": path.name, "size": stat.st_size, "uploaded_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), "status": "uploaded"})
+        documents.append({"id": None, "name": path.name, "size": stat.st_size, "uploaded_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), "status": "uploaded", "status_label": "需求文档已上传", "stage_started_at": None, "current_stage_duration_ms": None})
     return sorted(documents, key=lambda item: item["uploaded_at"], reverse=True)
 
 
@@ -175,6 +191,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"requirements": {"total": len(list_requirements())}, "cases": {"total": len(cases), "approved": sum(item["review_status"] == "approved" for item in cases), "pending_review": sum(item["review_status"] != "approved" for item in cases)}, "runs": run_summary()})
         if self.path == "/requirements":
             return self.send_json(200, {"requirements": list_requirements()})
+        if self.path.startswith("/requirements/"):
+            workflow_id = self.path.removeprefix("/requirements/")
+            try:
+                return self.send_json(200, WORKFLOWS.get(workflow_id))
+            except WorkflowError as exc:
+                return self.send_json(404, {"error": str(exc)})
         if self.path == "/cases":
             return self.send_json(200, {"cases": load_cases()})
         if self.path.startswith("/cases/"):
@@ -212,8 +234,17 @@ class Handler(BaseHTTPRequestHandler):
                     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                     target = target.with_name(f"{target.stem}-{stamp}{target.suffix}")
                 target.write_bytes(content)
-                return self.send_json(201, {"name": target.name, "size": len(content), "status": "uploaded"})
+                workflow = WORKFLOWS.create(target.name, str(target), len(content))
+                return self.send_json(201, workflow)
             except (OSError, ValueError) as exc:
+                return self.send_json(400, {"error": str(exc)})
+        if self.path.startswith("/requirements/") and self.path.endswith("/events"):
+            workflow_id = self.path.removeprefix("/requirements/").removesuffix("/events").rstrip("/")
+            try:
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                event = str(payload.pop("event"))
+                return self.send_json(200, WORKFLOWS.apply(workflow_id, event, payload))
+            except (KeyError, WorkflowError, ValueError, json.JSONDecodeError) as exc:
                 return self.send_json(400, {"error": str(exc)})
         if self.path != "/runs":
             return self.send_json(404, {"error": "not found"})

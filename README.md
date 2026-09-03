@@ -141,6 +141,42 @@ http://127.0.0.1:8088/
 
 需求文档支持`md`、`txt`、`pdf`、`doc`和`docx`，单个文件最大20 MB，原文件保存在`requirements/`。同名文件不会覆盖，服务会自动追加上传时间。
 
+## 需求评审工作流 API
+
+上传需求后，响应中的`id`是后续评审任务ID：
+
+```text
+GET  /requirements/<id>
+POST /requirements/<id>/events
+```
+
+后端使用受控事件驱动状态流转，不能直接修改状态。标准事件顺序：
+
+```text
+start_analysis
+→ requirement_understood
+→ review_completed（携带questions）
+→ answers_submitted（携带answers）
+→ draft_generated（携带cases）
+→ supplements_submitted（携带supplements）
+→ final_generated（携带cases）
+→ final_approved
+→ automation_generated（携带case_files）
+```
+
+执行中的阶段返回`stage_started_at`和`current_stage_duration_ms`，已结束阶段记录在`stages`中。终版用例触发`final_case_edited`后，已有自动化会标记为`outdated`，必须重新确认并生成后才能进入执行中心。
+
+事件请求示例：
+
+```json
+{
+  "event": "review_completed",
+  "questions": [
+    {"id": "q1", "question": "活动开始和结束条件是什么？"}
+  ]
+}
+```
+
 接口：
 
 ```bash
