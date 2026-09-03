@@ -75,6 +75,8 @@ def load_cases() -> list[dict[str, Any]]:
             {
                 "id": data.get("id", path.stem),
                 "name": data.get("name", path.stem),
+                "module": data.get("module", "未分类模块"),
+                "feature": data.get("feature", "未分类功能"),
                 "file": path.name,
                 "activity_id": data.get("activity_id"),
                 "review_status": review.get("status", "draft"),

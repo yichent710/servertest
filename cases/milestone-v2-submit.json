@@ -1,6 +1,8 @@
 {
   "id": "milestone_v2_submit",
   "name": "提交里程碑果实",
+  "module": "活动系统",
+  "feature": "里程碑 2.0",
   "review": {
     "status": "approved",
     "reviewer": "qa-team",

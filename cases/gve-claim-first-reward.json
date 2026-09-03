@@ -1,6 +1,8 @@
 {
   "id": "gve_claim_first_reward",
   "name": "团队活动个人积分第一档领奖",
+  "module": "活动系统",
+  "feature": "团队活动 GVE",
   "activity_id": 120001,
   "review": {
     "status": "approved",
