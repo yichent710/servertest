@@ -42,11 +42,14 @@ class WorkflowStoreTest(unittest.TestCase):
     def apply(self, event, payload=None):
         return self.store.apply(self.record["id"], event, payload)
 
+    def understand(self):
+        return self.apply("requirement_understood", {"analysis": {"summary": "需求摘要"}})
+
     def test_tracks_active_and_completed_stage_duration(self):
         self.apply("start_analysis")
         self.clock.advance(1.25)
         self.assertEqual(self.store.get(self.record["id"])["current_stage_duration_ms"], 1250)
-        result = self.apply("requirement_understood")
+        result = self.understand()
         self.assertEqual(result["stages"][0]["duration_ms"], 1250)
         self.assertEqual(result["status"], "reviewing_requirement")
 
@@ -56,14 +59,14 @@ class WorkflowStoreTest(unittest.TestCase):
 
     def test_requires_every_review_answer(self):
         self.apply("start_analysis")
-        self.apply("requirement_understood")
+        self.understand()
         self.apply("review_completed", {"questions": [{"id": "q1", "question": "活动何时开启？"}]})
         with self.assertRaises(WorkflowError):
             self.apply("answers_submitted", {"answers": {}})
 
     def test_full_flow_and_manual_edit_invalidates_automation(self):
         self.apply("start_analysis")
-        self.apply("requirement_understood")
+        self.understand()
         self.apply("review_completed", {"questions": [{"id": "q1", "question": "活动何时开启？"}]})
         self.apply("answers_submitted", {"answers": {"q1": "开服第二天"}})
         self.apply("draft_generated", {"cases": [sample_case()]})

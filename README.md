@@ -177,6 +177,34 @@ start_analysis
 }
 ```
 
+## AI Worker
+
+新需求上传成功后，后端默认异步调用本机`codex exec`：
+
+1. 在只读沙箱中读取需求原文、`server-pretest-designer` Skill和SunnyIsland服务端代码；
+2. 将结构化逻辑梳理保存到工作流`analysis`；
+3. 进入需求评审并将结构化问题保存到`review_questions`；
+4. 最终停在`waiting_review_answers`，等待测试人员回答。
+
+Worker 不允许模型修改仓库。API服务重启后会恢复处于`understanding_requirement`或`reviewing_requirement`的任务。失败任务可重试：
+
+```text
+POST /requirements/<id>/analyze
+```
+
+运行配置：
+
+```bash
+# 默认开启；本地只调试上传接口时可关闭
+SEVERTEST_AI_ENABLED=0 PYTHONPATH=src python3 -m severtest.server
+
+# Codex单阶段超时，默认600秒
+SEVERTEST_AI_TIMEOUT=900 PYTHONPATH=src python3 -m severtest.server
+
+# Codex不在PATH中时指定完整命令
+SEVERTEST_CODEX_COMMAND=/absolute/path/to/codex PYTHONPATH=src python3 -m severtest.server
+```
+
 接口：
 
 ```bash

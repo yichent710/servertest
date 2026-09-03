@@ -76,6 +76,8 @@ class WorkflowStore:
             "created_at": now,
             "updated_at": now,
             "stages": [],
+            "analysis": None,
+            "review_conclusion": None,
             "review_questions": [],
             "draft_cases": [],
             "supplements": [],
@@ -156,11 +158,28 @@ class WorkflowStore:
         stage["duration_ms"] = max(0, int((now - started).total_seconds() * 1000))
 
     def _apply_payload(self, record: dict[str, Any], event: str, payload: dict[str, Any]) -> None:
-        if event == "review_completed":
+        if event == "requirement_understood":
+            analysis = payload.get("analysis")
+            if not isinstance(analysis, dict):
+                raise WorkflowError("requirement_understood requires analysis")
+            record["analysis"] = analysis
+        elif event == "review_completed":
             questions = payload.get("questions")
-            if not isinstance(questions, list) or not questions:
+            if not isinstance(questions, list):
                 raise WorkflowError("review_completed requires questions")
-            record["review_questions"] = [{"id": str(item.get("id", index + 1)), "question": str(item["question"]), "answer": None} for index, item in enumerate(questions)]
+            record["review_questions"] = [
+                {
+                    "id": str(item.get("id", index + 1)),
+                    "severity": str(item.get("severity", "P2")),
+                    "location": str(item.get("location", "需求文档")),
+                    "question": str(item["question"]),
+                    "impact": str(item.get("impact", "")),
+                    "confirmation_needed": str(item.get("confirmation_needed", "")),
+                    "answer": None,
+                }
+                for index, item in enumerate(questions)
+            ]
+            record["review_conclusion"] = str(payload.get("conclusion", ""))
         elif event == "answers_submitted":
             answers = payload.get("answers")
             if not isinstance(answers, dict):

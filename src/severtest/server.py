@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+from .ai_worker import CodexStructuredRunner, RequirementAIWorker
 from .workflow import WorkflowError, WorkflowStore
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +21,8 @@ REPORTS = ROOT / "reports"
 WEB_INDEX = ROOT / "web" / "index.html"
 REQUIREMENTS = ROOT / "requirements"
 WORKFLOWS = WorkflowStore(REQUIREMENTS / ".workflows")
+AI_ENABLED = os.getenv("SEVERTEST_AI_ENABLED", "1") == "1"
+AI_WORKER = RequirementAIWorker(WORKFLOWS, CodexStructuredRunner(ROOT), ROOT, ROOT.parent / "sunnyisland")
 MAX_REQUIREMENT_SIZE = 20 * 1024 * 1024
 ALLOWED_REQUIREMENT_SUFFIXES = {".md", ".txt", ".pdf", ".doc", ".docx"}
 RUNS: dict[str, dict[str, Any]] = {}
@@ -185,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self.send_html(500, b"SeverTest web console is unavailable")
         if self.path == "/health":
-            return self.send_json(200, {"status": "ok"})
+            return self.send_json(200, {"status": "ok", "ai_worker_enabled": AI_ENABLED})
         if self.path == "/summary":
             cases = load_cases()
             return self.send_json(200, {"requirements": {"total": len(list_requirements())}, "cases": {"total": len(cases), "approved": sum(item["review_status"] == "approved" for item in cases), "pending_review": sum(item["review_status"] != "approved" for item in cases)}, "runs": run_summary()})
@@ -235,9 +238,19 @@ class Handler(BaseHTTPRequestHandler):
                     target = target.with_name(f"{target.stem}-{stamp}{target.suffix}")
                 target.write_bytes(content)
                 workflow = WORKFLOWS.create(target.name, str(target), len(content))
+                if AI_ENABLED:
+                    AI_WORKER.start(workflow["id"])
                 return self.send_json(201, workflow)
             except (OSError, ValueError) as exc:
                 return self.send_json(400, {"error": str(exc)})
+        if self.path.startswith("/requirements/") and self.path.endswith("/analyze"):
+            workflow_id = self.path.removeprefix("/requirements/").removesuffix("/analyze").rstrip("/")
+            try:
+                WORKFLOWS.get(workflow_id)
+                started = AI_WORKER.start(workflow_id)
+                return self.send_json(202, {"id": workflow_id, "started": started})
+            except WorkflowError as exc:
+                return self.send_json(404, {"error": str(exc)})
         if self.path.startswith("/requirements/") and self.path.endswith("/events"):
             workflow_id = self.path.removeprefix("/requirements/").removesuffix("/events").rstrip("/")
             try:
@@ -273,6 +286,10 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     port = int(os.getenv("SEVERTEST_API_PORT", "8088"))
     print(f"severtest API listening on http://127.0.0.1:{port}")
+    if AI_ENABLED:
+        for workflow in WORKFLOWS.list():
+            if workflow["status"] in {"understanding_requirement", "reviewing_requirement"}:
+                AI_WORKER.start(workflow["id"])
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 
