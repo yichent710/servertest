@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CASES = ROOT / "cases"
 REPORTS = ROOT / "reports"
 WEB_INDEX = ROOT / "web" / "index.html"
+WEB_ASSETS = {"/styles.css": (ROOT / "web" / "styles.css", "text/css; charset=utf-8"), "/app.js": (ROOT / "web" / "app.js", "text/javascript; charset=utf-8")}
 REQUIREMENTS = ROOT / "requirements"
 WORKFLOWS = WorkflowStore(REQUIREMENTS / ".workflows")
 AI_ENABLED = os.getenv("SEVERTEST_AI_ENABLED", "1") == "1"
@@ -158,9 +159,9 @@ def start_run(case: str, env: dict[str, str]) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def send_html(self, status: int, body: bytes) -> None:
+    def send_file(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -184,9 +185,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path in ("/", "/index.html"):
             try:
-                return self.send_html(200, WEB_INDEX.read_bytes())
+                return self.send_file(200, WEB_INDEX.read_bytes(), "text/html; charset=utf-8")
             except OSError:
-                return self.send_html(500, b"SeverTest web console is unavailable")
+                return self.send_file(500, b"SeverTest web console is unavailable", "text/plain; charset=utf-8")
+        if self.path in WEB_ASSETS:
+            path, content_type = WEB_ASSETS[self.path]
+            try:
+                return self.send_file(200, path.read_bytes(), content_type)
+            except OSError:
+                return self.send_json(404, {"error": "asset not found"})
         if self.path == "/health":
             return self.send_json(200, {"status": "ok", "ai_worker_enabled": AI_ENABLED})
         if self.path == "/summary":
@@ -256,7 +263,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                 event = str(payload.pop("event"))
-                return self.send_json(200, WORKFLOWS.apply(workflow_id, event, payload))
+                workflow = WORKFLOWS.apply(workflow_id, event, payload)
+                if AI_ENABLED and workflow["status"] == "generating_draft_cases":
+                    AI_WORKER.start(workflow_id)
+                return self.send_json(200, workflow)
             except (KeyError, WorkflowError, ValueError, json.JSONDecodeError) as exc:
                 return self.send_json(400, {"error": str(exc)})
         if self.path != "/runs":
@@ -288,7 +298,7 @@ def main() -> None:
     print(f"severtest API listening on http://127.0.0.1:{port}")
     if AI_ENABLED:
         for workflow in WORKFLOWS.list():
-            if workflow["status"] in {"understanding_requirement", "reviewing_requirement"}:
+            if workflow["status"] in {"understanding_requirement", "reviewing_requirement", "generating_draft_cases"}:
                 AI_WORKER.start(workflow["id"])
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 

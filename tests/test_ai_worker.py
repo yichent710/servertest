@@ -21,10 +21,12 @@ class FakeRunner:
                 "risks": [],
                 "unknowns": [],
             }
-        return {
-            "conclusion": "需要回答奖励幂等规则",
-            "questions": [{"id": "q1", "severity": "P1", "location": "奖励规则", "question": "是否允许重复领取？", "impact": "影响奖励幂等", "confirmation_needed": "确认重复请求结果"}],
-        }
+        if len(self.prompts) == 2:
+            return {
+                "conclusion": "需要回答奖励幂等规则",
+                "questions": [{"id": "q1", "severity": "P1", "location": "奖励规则", "question": "是否允许重复领取？", "impact": "影响奖励幂等", "confirmation_needed": "确认重复请求结果"}],
+            }
+        return {"cases": [{"id": "gve_reward", "name": "领取奖励", "module": "活动系统", "feature": "团队活动", "scenario": "个人奖励", "objective": "验证领奖", "source_refs": ["review:q1"], "preconditions": ["达到积分"], "steps": ["领取奖励"], "expected_results": ["奖励到账"], "assertions": [], "automation": {"status": "needs_action", "reason": "待生成 action"}, "data_impact": "增加奖励", "cleanup": "专用账号", "server_evidence": {"protocols": [], "code_symbols": [], "actor_fields": [], "config_keys": [], "log_keywords": []}, "change_note": "初版"}]}
 
 
 class FailingRunner:
@@ -54,6 +56,12 @@ class RequirementAIWorkerTest(unittest.TestCase):
         self.assertEqual(result["review_conclusion"], "需要回答奖励幂等规则")
         self.assertEqual(result["review_questions"][0]["severity"], "P1")
         self.assertEqual(len(runner.prompts), 2)
+
+        self.store.apply(self.record["id"], "answers_submitted", {"answers": {"q1": "不允许重复领取"}})
+        draft = worker.process(self.record["id"])
+        self.assertEqual(draft["status"], "waiting_case_supplements")
+        self.assertEqual(draft["draft_cases"][0]["module"], "活动系统")
+        self.assertEqual(len(runner.prompts), 3)
 
     def test_records_worker_failure(self):
         worker = RequirementAIWorker(self.store, FailingRunner(), self.root, self.root / "sunnyisland")
