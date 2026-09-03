@@ -30,6 +30,7 @@ EVENT_RULES = {
     "start_analysis": ({"uploaded", "failed"}, "understanding_requirement"),
     "requirement_understood": ({"understanding_requirement"}, "reviewing_requirement"),
     "review_completed": ({"reviewing_requirement"}, "waiting_review_answers"),
+    "review_regeneration_requested": ({"waiting_review_answers"}, "reviewing_requirement"),
     "answers_submitted": ({"waiting_review_answers"}, "generating_draft_cases"),
     "draft_generated": ({"generating_draft_cases"}, "waiting_case_supplements"),
     "supplements_submitted": ({"waiting_case_supplements"}, "generating_final_cases"),
@@ -180,6 +181,9 @@ class WorkflowStore:
                 for index, item in enumerate(questions)
             ]
             record["review_conclusion"] = str(payload.get("conclusion", ""))
+        elif event == "review_regeneration_requested":
+            record["review_questions"] = []
+            record["review_conclusion"] = None
         elif event == "answers_submitted":
             answers = payload.get("answers")
             if not isinstance(answers, dict):

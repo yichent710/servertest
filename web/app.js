@@ -124,6 +124,7 @@ function renderAnalysis(analysis) {
 
 function renderQuestions(workflow) {
   el('reviewConclusion').textContent = workflow.review_conclusion || 'AI 完成需求评审后会在这里提出待确认问题';
+  el('regenerateReview').hidden = workflow.status !== 'waiting_review_answers';
   const questions = workflow.review_questions || [];
   if (workflow.status === 'waiting_review_answers') {
     el('questionsContent').innerHTML = `${questions.map(question => `<div class="question"><div class="question-head"><span class="severity">${esc(question.severity)}</span><b>${esc(question.location)}</b></div><p><b>${esc(question.question)}</b></p><p class="subtle">影响：${esc(question.impact || '未说明')}</p><p class="subtle">需要确认：${esc(question.confirmation_needed || '请按实际口径回答')}</p><textarea data-question-id="${esc(question.id)}" placeholder="输入测试口径或产品确认结果"></textarea></div>`).join('')}<button class="btn primary" id="submitAnswers">${questions.length ? '提交全部回答并生成初版' : '确认无待回答问题并生成初版'}</button>`;
@@ -145,6 +146,16 @@ async function submitAnswers() {
     const workflow = await request(`/requirements/${encodeURIComponent(state.selectedWorkflow)}/events`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({event: 'answers_submitted', answers})});
     renderWorkflow(workflow); updatePolling(workflow); showToast('回答已提交，正在生成初版用例');
   } catch (error) { showToast(error.message, true); el('submitAnswers').disabled = false; }
+}
+
+async function regenerateReview() {
+  if (!state.selectedWorkflow) return;
+  el('regenerateReview').disabled = true;
+  try {
+    const workflow = await request(`/requirements/${encodeURIComponent(state.selectedWorkflow)}/events`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({event: 'review_regeneration_requested'})});
+    renderWorkflow(workflow); updatePolling(workflow); showToast('正在按最新规则重新生成评审问题');
+  } catch (error) { showToast(error.message, true); }
+  finally { el('regenerateReview').disabled = false; }
 }
 
 function groupDraft(cases) {
@@ -220,6 +231,7 @@ el('uploadZone').ondrop = event => { event.preventDefault(); el('uploadZone').cl
 el('requirementList').onclick = async event => { const open = event.target.closest('[data-open-workflow]'), retry = event.target.closest('[data-retry-workflow]'); if (open) { state.selectedWorkflow = open.dataset.openWorkflow; showView('review'); await loadWorkflow(state.selectedWorkflow); } if (retry) { await request(`/requirements/${retry.dataset.retryWorkflow}/analyze`, {method: 'POST'}); await loadWorkflow(retry.dataset.retryWorkflow); } };
 el('reviewWorkspace').onclick = async event => { const retry = event.target.closest('[data-retry-workflow]'); if (retry) { await request(`/requirements/${retry.dataset.retryWorkflow}/analyze`, {method: 'POST'}); await loadWorkflow(retry.dataset.retryWorkflow); } };
 el('expandDraft').onclick = () => { el('draftTree').querySelectorAll('ul').forEach(node => node.classList.remove('tree-collapsed')); el('draftTree').querySelectorAll('.tree-toggle').forEach(node => node.textContent = '−'); };
+el('regenerateReview').onclick = regenerateReview;
 el('collapseDraft').onclick = () => { el('draftTree').querySelectorAll('ul').forEach(node => node.classList.add('tree-collapsed')); el('draftTree').querySelectorAll('.tree-toggle').forEach(node => node.textContent = '+'); };
 el('selectAllCases').onclick = () => toggleCases(true); el('clearCases').onclick = () => toggleCases(false); el('runSelectedButton').onclick = runSelected; el('runFilter').onchange = renderRuns;
 refreshAll();

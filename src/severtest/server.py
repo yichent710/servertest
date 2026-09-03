@@ -264,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                 event = str(payload.pop("event"))
                 workflow = WORKFLOWS.apply(workflow_id, event, payload)
-                if AI_ENABLED and workflow["status"] == "generating_draft_cases":
+                if AI_ENABLED and workflow["status"] in {"reviewing_requirement", "generating_draft_cases"}:
                     AI_WORKER.start(workflow_id)
                 return self.send_json(200, workflow)
             except (KeyError, WorkflowError, ValueError, json.JSONDecodeError) as exc:

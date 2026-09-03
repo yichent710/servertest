@@ -64,6 +64,15 @@ class WorkflowStoreTest(unittest.TestCase):
         with self.assertRaises(WorkflowError):
             self.apply("answers_submitted", {"answers": {}})
 
+    def test_can_request_review_regeneration(self):
+        self.apply("start_analysis")
+        self.understand()
+        self.apply("review_completed", {"conclusion": "需要确认", "questions": [{"id": "q1", "question": "活动何时开启？"}]})
+        regenerated = self.apply("review_regeneration_requested")
+        self.assertEqual(regenerated["status"], "reviewing_requirement")
+        self.assertEqual(regenerated["review_questions"], [])
+        self.assertIsNone(regenerated["review_conclusion"])
+
     def test_full_flow_and_manual_edit_invalidates_automation(self):
         self.apply("start_analysis")
         self.understand()
