@@ -6,5 +6,6 @@ build/
 dist/
 *.egg-info/
 reports/
+cases/generated/
 *.log
 .DS_Store

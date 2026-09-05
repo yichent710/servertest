@@ -70,6 +70,16 @@ class RequirementAIWorkerTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("model unavailable", result["error"])
 
+    def test_writes_only_executable_final_cases(self):
+        worker = RequirementAIWorker(self.store, FakeRunner(), self.root, self.root / "sunnyisland")
+        record = dict(self.record)
+        record["final_cases"] = [{"id": "ready_case", "name": "可执行用例", "module": "活动", "feature": "领奖", "steps": [{"action": "load_actor"}], "assertions": [{"name": "加载成功", "metric": "after.actor_version", "op": "gt", "expected": 0}], "source_refs": ["review:q1"]}]
+        files = worker._write_automation_cases(record)
+        self.assertEqual(files, [f"generated/{record['id']}/ready_case.json"])
+        generated = self.root / "cases" / files[0]
+        self.assertTrue(generated.is_file())
+        self.assertIn('"status": "approved"', generated.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

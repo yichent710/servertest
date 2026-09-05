@@ -152,7 +152,28 @@ class RequirementAIWorker:
         if record["status"] == "generating_final_cases":
             final = self.runner.generate(self._final_prompt(record), DRAFT_CASE_SCHEMA)
             record = self.store.apply(workflow_id, "final_generated", {"cases": final["cases"]})
+        if record["status"] == "generating_automation":
+            files = self._write_automation_cases(record)
+            record = self.store.apply(workflow_id, "automation_generated", {"case_files": files})
         return record
+
+    def _write_automation_cases(self, record: dict[str, Any]) -> list[str]:
+        output = self.root / "cases" / "generated" / record["id"]
+        output.mkdir(parents=True, exist_ok=True)
+        files = []
+        for case in record.get("final_cases", []):
+            payload = dict(case)
+            payload["review"] = {"status": "approved", "iteration": 1, "source_workflow": record["id"]}
+            payload["generated_from"] = {"workflow_id": record["id"], "case_id": case.get("id"), "source_refs": case.get("source_refs", [])}
+            steps = payload.get("steps", [])
+            if all(isinstance(step, dict) and isinstance(step.get("action"), str) for step in steps):
+                filename = f"{case['id']}.json"
+                path = output / filename
+                path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                files.append(str(path.relative_to(self.root / "cases")))
+        if not files:
+            raise RuntimeError("终版用例缺少可执行的 action 步骤，无法生成自动化")
+        return files
 
     def _analysis_prompt(self, record: dict[str, Any]) -> str:
         return f"""You are the read-only analysis worker for SeverTest.

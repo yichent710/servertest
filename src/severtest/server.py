@@ -72,7 +72,7 @@ def load_generated_report(stdout: str) -> tuple[str | None, dict[str, Any] | Non
 
 def load_cases() -> list[dict[str, Any]]:
     cases = []
-    for path in sorted(CASES.glob("*.json")):
+    for path in sorted(CASES.rglob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -84,7 +84,7 @@ def load_cases() -> list[dict[str, Any]]:
                 "name": data.get("name", path.stem),
                 "module": data.get("module", "未分类模块"),
                 "feature": data.get("feature", "未分类功能"),
-                "file": path.name,
+                "file": str(path.relative_to(CASES)),
                 "activity_id": data.get("activity_id"),
                 "review_status": review.get("status", "draft"),
                 "review_iteration": review.get("iteration", 0),
@@ -210,9 +210,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/cases":
             return self.send_json(200, {"cases": load_cases()})
         if self.path.startswith("/cases/"):
-            name = self.path.removeprefix("/cases/")
-            path = CASES / name
-            if Path(name).name != name or not path.is_file():
+            name = unquote(self.path.removeprefix("/cases/"))
+            path = (CASES / name).resolve()
+            if CASES.resolve() not in path.parents or not path.is_file():
                 return self.send_json(404, {"error": "case not found"})
             try:
                 return self.send_json(200, json.loads(path.read_text(encoding="utf-8")))
@@ -264,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                 event = str(payload.pop("event"))
                 workflow = WORKFLOWS.apply(workflow_id, event, payload)
-                if AI_ENABLED and workflow["status"] in {"reviewing_requirement", "generating_draft_cases"}:
+                if AI_ENABLED and workflow["status"] in {"reviewing_requirement", "generating_draft_cases", "generating_final_cases", "generating_automation"}:
                     AI_WORKER.start(workflow_id)
                 return self.send_json(200, workflow)
             except (KeyError, WorkflowError, ValueError, json.JSONDecodeError) as exc:
@@ -282,9 +282,10 @@ class Handler(BaseHTTPRequestHandler):
             run_ids = []
             for item in requested:
                 case = str(item)
-                if not (CASES / case).is_file() or Path(case).name != case:
+                case_path = (CASES / case).resolve()
+                if CASES.resolve() not in case_path.parents or not case_path.is_file():
                     raise ValueError(f"unknown case: {case}")
-                case_data = json.loads((CASES / case).read_text(encoding="utf-8"))
+                case_data = json.loads(case_path.read_text(encoding="utf-8"))
                 if case_data.get("review", {}).get("status", "draft") != "approved":
                     raise ValueError(f"case is not approved: {case}")
                 run_ids.append(start_run(case, env))
@@ -298,7 +299,7 @@ def main() -> None:
     print(f"severtest API listening on http://127.0.0.1:{port}")
     if AI_ENABLED:
         for workflow in WORKFLOWS.list():
-            if workflow["status"] in {"understanding_requirement", "reviewing_requirement", "generating_draft_cases", "generating_final_cases"}:
+            if workflow["status"] in {"understanding_requirement", "reviewing_requirement", "generating_draft_cases", "generating_final_cases", "generating_automation"}:
                 AI_WORKER.start(workflow["id"])
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
