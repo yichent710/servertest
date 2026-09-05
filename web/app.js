@@ -113,7 +113,28 @@ function renderWorkflow(workflow) {
   renderAnalysis(workflow.analysis);
   renderQuestions(workflow);
   renderDraft(workflow.draft_cases || []);
+  el('supplementEditor').hidden = workflow.status !== 'waiting_case_supplements';
+  el('finalPanel').hidden = !(workflow.final_cases || []).length;
+  el('approveFinal').hidden = workflow.status !== 'waiting_final_approval';
+  if ((workflow.final_cases || []).length) { el('finalSummary').textContent = `${workflow.final_cases.length} 条终版用例`; renderFinal(workflow.final_cases); }
   if (workflow.error) el('questionsContent').innerHTML = `<div class="diagnosis failed"><h3>AI 处理失败</h3><p>${esc(workflow.error)}</p><button class="btn" data-retry-workflow="${esc(workflow.id)}">重新分析</button></div>`;
+}
+
+async function submitSupplements() {
+  const text = el('supplementInput').value.trim();
+  const supplements = text ? text.split(/\n+/).map(item => item.trim()).filter(Boolean) : [];
+  if (!supplements.length) return showToast('请填写至少一条补充意见', true);
+  el('submitSupplements').disabled = true;
+  try { const workflow = await request(`/requirements/${encodeURIComponent(state.selectedWorkflow)}/events`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({event: 'supplements_submitted', supplements})}); renderWorkflow(workflow); updatePolling(workflow); showToast('补充意见已提交，正在生成终版用例'); }
+  catch (error) { showToast(error.message, true); }
+  finally { el('submitSupplements').disabled = false; }
+}
+
+function renderFinal(cases) { el('finalTree').innerHTML = cases.map(item => `<li><button class="tree-node case-leaf"><span class="tree-label">${esc(item.module)} / ${esc(item.feature)} / ${esc(item.name)}</span></button></li>`).join(''); }
+
+async function approveFinal() {
+  const workflow = await request(`/requirements/${encodeURIComponent(state.selectedWorkflow)}/events`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({event: 'final_approved'})});
+  renderWorkflow(workflow); updatePolling(workflow); showToast('终版已确认，等待生成自动化');
 }
 
 function renderAnalysis(analysis) {
@@ -232,6 +253,7 @@ el('requirementList').onclick = async event => { const open = event.target.close
 el('reviewWorkspace').onclick = async event => { const retry = event.target.closest('[data-retry-workflow]'); if (retry) { await request(`/requirements/${retry.dataset.retryWorkflow}/analyze`, {method: 'POST'}); await loadWorkflow(retry.dataset.retryWorkflow); } };
 el('expandDraft').onclick = () => { el('draftTree').querySelectorAll('ul').forEach(node => node.classList.remove('tree-collapsed')); el('draftTree').querySelectorAll('.tree-toggle').forEach(node => node.textContent = '−'); };
 el('regenerateReview').onclick = regenerateReview;
+el('submitSupplements').onclick = submitSupplements; el('approveFinal').onclick = approveFinal;
 el('collapseDraft').onclick = () => { el('draftTree').querySelectorAll('ul').forEach(node => node.classList.add('tree-collapsed')); el('draftTree').querySelectorAll('.tree-toggle').forEach(node => node.textContent = '+'); };
 el('selectAllCases').onclick = () => toggleCases(true); el('clearCases').onclick = () => toggleCases(false); el('runSelectedButton').onclick = runSelected; el('runFilter').onchange = renderRuns;
 refreshAll();

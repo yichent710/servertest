@@ -298,7 +298,7 @@ def main() -> None:
     print(f"severtest API listening on http://127.0.0.1:{port}")
     if AI_ENABLED:
         for workflow in WORKFLOWS.list():
-            if workflow["status"] in {"understanding_requirement", "reviewing_requirement", "generating_draft_cases"}:
+            if workflow["status"] in {"understanding_requirement", "reviewing_requirement", "generating_draft_cases", "generating_final_cases"}:
                 AI_WORKER.start(workflow["id"])
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
