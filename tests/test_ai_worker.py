@@ -80,6 +80,14 @@ class RequirementAIWorkerTest(unittest.TestCase):
         self.assertTrue(generated.is_file())
         self.assertIn('"status": "approved"', generated.read_text(encoding="utf-8"))
 
+    def test_maps_business_language_steps(self):
+        worker = RequirementAIWorker(self.store, FakeRunner(), self.root, self.root / "sunnyisland")
+        record = dict(self.record)
+        record["final_cases"] = [{"id": "mapped", "name": "映射用例", "module": "活动", "feature": "里程碑", "steps": ["加载玩家数据", "刷新玩家数据"], "assertions": [], "source_refs": []}]
+        files = worker._write_automation_cases(record)
+        self.assertEqual(files, [f"generated/{record['id']}/mapped.json"])
+        self.assertIn('"action": "load_actor"', (self.root / "cases" / files[0]).read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

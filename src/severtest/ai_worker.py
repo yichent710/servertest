@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .workflow import WorkflowError, WorkflowStore
+from .automation import resolve_action, resolve_assertion
 
 
 ANALYSIS_SCHEMA = {
@@ -47,7 +48,7 @@ CASE_PROPERTIES = {
     "preconditions": {"type": "array", "items": {"type": "string"}},
     "steps": {"type": "array", "items": {"type": "string"}},
     "expected_results": {"type": "array", "items": {"type": "string"}},
-    "assertions": {"type": "array", "items": {"type": "string"}},
+    "assertions": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["name", "metric", "op", "expected"], "properties": {"name": {"type": "string"}, "metric": {"type": "string"}, "op": {"type": "string"}, "expected": {"type": ["number", "string"]}}}},
     "automation": {"type": "object", "additionalProperties": False, "required": ["status", "reason"], "properties": {"status": {"type": "string", "enum": ["automatable", "needs_action", "manual_only"]}, "reason": {"type": "string"}}},
     "data_impact": {"type": "string"},
     "cleanup": {"type": "string"},
@@ -165,8 +166,11 @@ class RequirementAIWorker:
             payload = dict(case)
             payload["review"] = {"status": "approved", "iteration": 1, "source_workflow": record["id"]}
             payload["generated_from"] = {"workflow_id": record["id"], "case_id": case.get("id"), "source_refs": case.get("source_refs", [])}
-            steps = payload.get("steps", [])
-            if all(isinstance(step, dict) and isinstance(step.get("action"), str) for step in steps):
+            steps = [resolve_action(step) for step in payload.get("steps", [])]
+            assertions = [resolve_assertion(item) for item in payload.get("assertions", [])]
+            if steps and all(step is not None for step in steps) and all(item is not None for item in assertions):
+                payload["steps"] = steps
+                payload["assertions"] = assertions
                 filename = f"{case['id']}.json"
                 path = output / filename
                 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
